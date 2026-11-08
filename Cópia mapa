@@ -1,6 +1,7 @@
 --[[
-    SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS - Versão 3.3 (cópia completa, hierarquia, terreno, sem jogadores)
+    SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS - Versão 3.4 (cópia completa, hierarquia, terreno, sem jogadores)
     Interface compacta, janela arrastável e ícone flutuante circular
+    Novo: botão "ANCORAR TUDO" na aba COPIAR (ancora todas as partes do Workspace)
 ]]
 
 local Players = game:GetService("Players")
@@ -249,9 +250,12 @@ ProgressBarC.BorderSizePixel = 0
 ProgressBarC.Parent = ProgressBgC
 corner(ProgressBarC, 4)
 
+-- Botão: ancora todas as partes do Workspace
+local AnchorAllBtn = newButton(CopyContainer, "⚓ ANCORAR TUDO", Theme.Warn, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 104), 12)
+
 local CopyCard = Instance.new("Frame")
-CopyCard.Size = UDim2.new(1, 0, 1, -106)
-CopyCard.Position = UDim2.new(0, 0, 0, 104)
+CopyCard.Size = UDim2.new(1, 0, 1, -146)
+CopyCard.Position = UDim2.new(0, 0, 0, 142)
 CopyCard.BackgroundColor3 = Theme.Surface
 CopyCard.BorderSizePixel = 0
 CopyCard.Parent = CopyContainer
@@ -618,23 +622,6 @@ local function serializeRecord(rec, records)
                     end
                 end
             end
-        end
-    end
-
-    -- Força Anchored = true em toda BasePart (inclusive dentro de Models/Folders)
-    -- Só altera o dado salvo; o mapa original não é modificado.
-    local okA, isPart = pcall(function() return obj:IsA("BasePart") end)
-    if okA and isPart then
-        local found = false
-        for _, pair in ipairs(entry.P) do
-            if pair[1] == "Anchored" then
-                pair[2] = true
-                found = true
-                break
-            end
-        end
-        if not found then
-            entry.P[#entry.P + 1] = {"Anchored", true}
         end
     end
 
@@ -1049,6 +1036,59 @@ local function startCopyProcess()
 end
 
 --------------------------------------------------------------------------------
+-- ANCORAR TUDO: ancora todas as BasePart do Workspace (inclusive dentro de
+-- Models e Folders, em qualquer nível). Ignora o Terrain e os personagens dos
+-- jogadores (para ninguém ficar travado no lugar).
+--------------------------------------------------------------------------------
+
+local function anchorAllWorkspace()
+    if isRunning then return end
+    isRunning = true
+    AnchorAllBtn.Text = "ANCORANDO..."
+
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local characters = {}
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p.Character then characters[#characters + 1] = p.Character end
+            end
+
+            local function inPlayerCharacter(inst)
+                for _, c in ipairs(characters) do
+                    if inst:IsDescendantOf(c) then return true end
+                end
+                return false
+            end
+
+            StatusCopy.Text = "Ancorando partes do Workspace..."
+            local all = Workspace:GetDescendants()
+            local anchoredNow, alreadyAnchored, n = 0, 0, 0
+
+            for _, d in ipairs(all) do
+                if d:IsA("BasePart") and not d:IsA("Terrain") and not inPlayerCharacter(d) then
+                    if d.Anchored then
+                        alreadyAnchored = alreadyAnchored + 1
+                    elseif pcall(function() d.Anchored = true end) then
+                        anchoredNow = anchoredNow + 1
+                    end
+                end
+                n = n + 1
+                if n % 500 == 0 then
+                    StatusCopy.Text = string.format("Ancorando... %d/%d objetos verificados", n, #all)
+                    task.wait()
+                end
+            end
+
+            StatusCopy.Text = string.format("Pronto! %d partes ancoradas agora (%d já estavam ancoradas).",
+                anchoredNow, alreadyAnchored)
+        end)
+        if not ok then StatusCopy.Text = "Erro ao ancorar: " .. tostring(err) end
+        AnchorAllBtn.Text = "⚓ ANCORAR TUDO"
+        isRunning = false
+    end)
+end
+
+--------------------------------------------------------------------------------
 -- 5. GERENCIADOR DE BACKUPS
 --------------------------------------------------------------------------------
 
@@ -1444,7 +1484,8 @@ end)
 
 CopyActionBtn.MouseButton1Click:Connect(startCopyProcess)
 CancelCopyBtn.MouseButton1Click:Connect(function() cancelRequested = true end)
+AnchorAllBtn.MouseButton1Click:Connect(anchorAllWorkspace)
 RefreshBtn.MouseButton1Click:Connect(loadBackupList)
 ImportActionBtn.MouseButton1Click:Connect(startImportProcess)
 
-print("Sistema de Backup v3.3 carregado!")
+print("Sistema de Backup v3.4 carregado!")
