@@ -1253,24 +1253,63 @@ local function runImport()
         end)
     end
 
-    -- reaplica o tamanho original das MeshParts/Unions depois que as malhas carregam
+    -- Verificação final: percorre TODAS as MeshParts/Unions importadas (em qualquer nível de
+    -- Models dentro de Models) e corrige o tamanho até que nenhuma esteja diferente do original
     if #sizeFix > 0 then
-        StatusImport.Text = string.format("Ajustando o tamanho de %d MeshParts/Unions...", #sizeFix)
         pcall(function()
             local list = {}
             for _, f in ipairs(sizeFix) do list[#list + 1] = f.obj end
+            StatusImport.Text = "Carregando malhas..."
             game:GetService("ContentProvider"):PreloadAsync(list)
         end)
-        for round = 1, 3 do
-            task.wait(1)
-            for i, f in ipairs(sizeFix) do
-                pcall(function()
-                    f.obj.Size = f.size
-                    if f.cf then f.obj.CFrame = f.cf end
+
+        local TOL = 0.05
+        local function isWrong(f)
+            local ok, wrong = pcall(function() return (f.obj.Size - f.size).Magnitude > TOL end)
+            return ok and wrong
+        end
+        local function fix(f)
+            pcall(function()
+                f.obj.Size = f.size
+                if f.cf then f.obj.CFrame = f.cf end
+            end)
+        end
+
+        -- vigia: se o Roblox redefinir o tamanho depois (malha carregando), corrige de novo
+        local watchers = {}
+        for _, f in ipairs(sizeFix) do
+            local ok, conn = pcall(function()
+                return f.obj:GetPropertyChangedSignal("Size"):Connect(function()
+                    if isWrong(f) then fix(f) end
                 end)
+            end)
+            if ok then watchers[#watchers + 1] = conn end
+        end
+
+        local stableRounds = 0
+        for round = 1, 20 do
+            task.wait(1)
+            local wrongCount = 0
+            for i, f in ipairs(sizeFix) do
+                if isWrong(f) then
+                    wrongCount = wrongCount + 1
+                    fix(f)
+                end
                 if i % 200 == 0 then task.wait() end
             end
+            StatusImport.Text = string.format("Conferindo tamanhos (rodada %d): %d corrigidas de %d",
+                round, wrongCount, #sizeFix)
+            if wrongCount == 0 then
+                stableRounds = stableRounds + 1
+                if stableRounds >= 3 then break end -- 3 rodadas seguidas sem nenhuma errada
+            else
+                stableRounds = 0
+            end
         end
+
+        task.delay(60, function()
+            for _, conn in ipairs(watchers) do conn:Disconnect() end
+        end)
     end
 
     -- serviços e terreno
