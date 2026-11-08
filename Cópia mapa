@@ -1,5 +1,5 @@
 --[[
-    SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS - Versão 3.2 (nome do backup, mapa ancorado, restauração de Unions)
+    SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS - Versão 3.2 (nome do backup e mapa ancorado)
     Interface compacta, janela arrastável e ícone flutuante circular
 ]]
 
@@ -333,69 +333,6 @@ local function sanitizeName(text)
     return text
 end
 
--- Base64 (para guardar dados binários das Unions dentro do JSON)
-local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local B64Lookup = {}
-for i = 1, #B64 do B64Lookup[B64:sub(i, i)] = i - 1 end
-
-local function b64encode(data)
-    local out = {}
-    for i = 1, #data, 3 do
-        local a, b, c = data:byte(i, i + 2)
-        local n = a * 65536 + (b or 0) * 256 + (c or 0)
-        local i1 = math.floor(n / 262144) % 64
-        local i2 = math.floor(n / 4096) % 64
-        local i3 = math.floor(n / 64) % 64
-        local i4 = n % 64
-        out[#out + 1] = B64:sub(i1 + 1, i1 + 1) .. B64:sub(i2 + 1, i2 + 1)
-            .. (b and B64:sub(i3 + 1, i3 + 1) or "=")
-            .. (c and B64:sub(i4 + 1, i4 + 1) or "=")
-    end
-    return table.concat(out)
-end
-
-local function b64decode(str)
-    str = (str:gsub("[^%w%+/=]", ""))
-    local out = {}
-    for i = 1, #str, 4 do
-        local c1, c2, c3, c4 = str:sub(i, i), str:sub(i + 1, i + 1), str:sub(i + 2, i + 2), str:sub(i + 3, i + 3)
-        local n = (B64Lookup[c1] or 0) * 262144 + (B64Lookup[c2] or 0) * 4096
-            + (B64Lookup[c3] or 0) * 64 + (B64Lookup[c4] or 0)
-        local bytes = string.char(math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256)
-        if c3 == "=" then bytes = bytes:sub(1, 1) elseif c4 == "=" then bytes = bytes:sub(1, 2) end
-        out[#out + 1] = bytes
-    end
-    return table.concat(out)
-end
-
--- Propriedades ocultas que guardam a geometria de uma UnionOperation
-local unionHiddenProps = {"AssetId", "ChildData", "MeshData", "PhysicsData"}
-local unionStats = {ok = 0, fallback = 0}
-
--- Recria uma Union. Se a geometria não puder ser restaurada, cria um Part
--- (mesmo tamanho/posição/cor) marcado com o atributo OriginalClass.
-local function createUnion(props)
-    local data = props and props.UnionData
-    if data and type(sethiddenproperty) == "function" then
-        local u = Instance.new("UnionOperation")
-        local applied = 0
-        for name, b64 in pairs(data) do
-            if pcall(sethiddenproperty, u, name, b64decode(b64)) then
-                applied = applied + 1
-            end
-        end
-        if applied > 0 then
-            unionStats.ok = unionStats.ok + 1
-            return u
-        end
-        u:Destroy()
-    end
-    local p = Instance.new("Part")
-    p:SetAttribute("OriginalClass", "UnionOperation")
-    unionStats.fallback = unionStats.fallback + 1
-    return p
-end
-
 local supportedClasses = {
     ["Part"] = true, ["MeshPart"] = true, ["Model"] = true, ["Folder"] = true,
     ["UnionOperation"] = true, ["Decal"] = true, ["Texture"] = true,
@@ -436,23 +373,6 @@ local function serializeObject(obj, parentPath)
             if obj:IsA("MeshPart") then
                 data.Properties.MeshId = obj.MeshId
                 data.Properties.TextureID = obj.TextureID
-            end
-            if obj:IsA("UnionOperation") then
-                pcall(function()
-                    data.Properties.RenderFidelity = obj.RenderFidelity.Name
-                    data.Properties.CollisionFidelity = obj.CollisionFidelity.Name
-                    data.Properties.UsePartColor = obj.UsePartColor
-                end)
-                if type(gethiddenproperty) == "function" then
-                    local ud = {}
-                    for _, n in ipairs(unionHiddenProps) do
-                        local okG, v = pcall(gethiddenproperty, obj, n)
-                        if okG and type(v) == "string" and #v > 0 then
-                            ud[n] = b64encode(v)
-                        end
-                    end
-                    if next(ud) then data.Properties.UnionData = ud end
-                end
             end
         elseif obj:IsA("Decal") or obj:IsA("Texture") then
             data.Properties.Texture = obj.Texture
@@ -724,7 +644,6 @@ local function startImportProcess()
         importedFolder.Parent = Workspace
 
         local totalImported = 0
-        unionStats.ok, unionStats.fallback = 0, 0
 
         for partIdx = 1, totalParts do
             local okPart, partRaw = pcall(readfile, string.format("%s/Parte_%03d.json", selectedBackupPath, partIdx))
@@ -735,12 +654,7 @@ local function startImportProcess()
                 if okDecPart and partData.Objects then
                     for _, itemData in ipairs(partData.Objects) do
                         pcall(function()
-                            local newObj
-                            if itemData.ClassName == "UnionOperation" then
-                                newObj = createUnion(itemData.Properties)
-                            else
-                                newObj = Instance.new(itemData.ClassName)
-                            end
+                            local newObj = Instance.new(itemData.ClassName)
                             newObj.Name = itemData.Name
 
                             local props = itemData.Properties
@@ -759,17 +673,7 @@ local function startImportProcess()
                                     if props.CastShadow ~= nil then newObj.CastShadow = props.CastShadow end
                                     if newObj:IsA("MeshPart") then
                                         pcall(function()
-                                            if props.MeshId then newObj.MeshId = props.MeshId end
-                                        end)
-                                        pcall(function()
                                             if props.TextureID then newObj.TextureID = props.TextureID end
-                                        end)
-                                    end
-                                    if newObj:IsA("UnionOperation") then
-                                        pcall(function()
-                                            if props.UsePartColor ~= nil then newObj.UsePartColor = props.UsePartColor end
-                                            if props.RenderFidelity then newObj.RenderFidelity = Enum.RenderFidelity[props.RenderFidelity] end
-                                            if props.CollisionFidelity then newObj.CollisionFidelity = Enum.CollisionFidelity[props.CollisionFidelity] end
                                         end)
                                     end
                                 elseif newObj:IsA("Decal") or newObj:IsA("Texture") then
@@ -794,9 +698,7 @@ local function startImportProcess()
             task.wait(0.02)
         end
 
-        StatusImport.Text = string.format(
-            "Sucesso! %d objetos importados (ancorados). Unions: %d restauradas, %d substituídas por Part.",
-            totalImported, unionStats.ok, unionStats.fallback)
+        StatusImport.Text = string.format("Sucesso! %d objetos importados (ancorados).", totalImported)
         isRunning = false
     end)
 end
