@@ -1,7 +1,6 @@
 --[[
     PROJETO: SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS ROBLOX MOBILE
-    Autor: Assistente Especializado
-    Compatibilidade: Delta / Roblox Studio Lite (Mobile)
+    Versão Corrigida
 ]]
 
 local Players = game:GetService("Players")
@@ -60,13 +59,6 @@ TopBar.Parent = MainFrame
 local UICornerTop = Instance.new("UICorner")
 UICornerTop.CornerRadius = UDim.new(0, 12)
 TopBar.Parent = MainFrame
--- Ajuste visual para canto superior arredondado
-local TopCover = Instance.new("Frame")
-TopCover.Size = UDim2.new(1, 0, 0, 10)
-TopCover.Position = UDim2.new(0, 0, 1, -10)
-TopCover.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
-TopCover.BorderSizePixel = 0
-TopCover.Parent = TopBar
 
 local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -100, 1, 0)
@@ -228,7 +220,7 @@ StatusCopy.TextSize = 12
 StatusCopy.TextXAlignment = Enum.TextXAlignment.Left
 StatusCopy.Parent = CopyContainer
 
--- Caixa de Texto para Exportação Universal (Cross-App)
+-- Caixa de Texto para Exportação Universal
 local ExportBox = Instance.new("TextBox")
 ExportBox.Size = UDim2.new(1, 0, 0, 130)
 ExportBox.Position = UDim2.new(0, 0, 0, 175)
@@ -236,7 +228,7 @@ ExportBox.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
 ExportBox.Font = Enum.Font.Code
 ExportBox.MultiLine = true
 ExportBox.ClearTextOnFocus = false
-ExportBox.PlaceholderText = "Os dados serializados do mapa aparecerão aqui para cópia..."
+ExportBox.PlaceholderText = "Os dados serializados do mapa aparecerão aqui..."
 ExportBox.Text = ""
 ExportBox.TextColor3 = Color3.fromRGB(0, 255, 128)
 ExportBox.TextSize = 11
@@ -259,7 +251,7 @@ ImportBox.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
 ImportBox.Font = Enum.Font.Code
 ImportBox.MultiLine = true
 ImportBox.ClearTextOnFocus = false
-ImportBox.PlaceholderText = "Cole aqui o código JSON/Lua exportado do backup..."
+ImportBox.PlaceholderText = "Cole aqui o código JSON exportado do backup..."
 ImportBox.Text = ""
 ImportBox.TextColor3 = Color3.fromRGB(220, 220, 240)
 ImportBox.TextSize = 11
@@ -335,7 +327,6 @@ local function serializeObject(obj, parentPath)
         Properties = {}
     }
     
-    -- Propriedades comuns e geométricas
     pcall(function()
         if obj:IsA("BasePart") then
             data.Properties.Size = {obj.Size.X, obj.Size.Y, obj.Size.Z}
@@ -365,7 +356,6 @@ local function serializeObject(obj, parentPath)
     return data
 end
 
--- Função de Cópia em Lotes com Otimização Mobile
 local function startCopyProcess()
     if isRunning then return end
     isRunning = true
@@ -378,7 +368,6 @@ local function startCopyProcess()
     task.spawn(function()
         local objectsToProcess = {}
         
-        -- Coleta recursiva segura ignorando Players e Camera
         local function scan(item, path)
             for _, child in ipairs(item:GetChildren()) do
                 if child ~= ScreenGui and child.Name ~= "PlayerGui" then
@@ -395,13 +384,13 @@ local function startCopyProcess()
         end)
         
         local totalObjects = #objectsToProcess
-        if totalObjects == 0 {
+        if totalObjects == 0 then
             StatusCopy.Text = "Status: Nenhum objeto compatível encontrado."
             isRunning = false
             CopyActionBtn.Visible = true
             CancelCopyBtn.Visible = false
             return
-        }
+        end
         
         local serializedData = {
             Version = "1.0",
@@ -410,7 +399,7 @@ local function startCopyProcess()
             Objects = {}
         }
         
-        local batchSize = 50 -- Lotes menores para evitar travamentos no celular
+        local batchSize = 50
         for i, itemData in ipairs(objectsToProcess) do
             if cancelRequested then
                 StatusCopy.Text = "Status: Cópia cancelada pelo usuário."
@@ -426,16 +415,14 @@ local function startCopyProcess()
                 table.insert(serializedData.Objects, serialized)
             end
             
-            -- Atualizar UI a cada lote
             if i % batchSize == 0 or i == totalObjects then
                 local pct = i / totalObjects
                 ProgressBarC.Size = UDim2.new(pct, 0, 1, 0)
                 StatusCopy.Text = string.format("Copiando: %d / %d (%.0f%%)", i, totalObjects, pct * 100)
-                task.wait(0.01) -- Cede ciclo de processamento para não travar o Android
+                task.wait(0.01)
             end
         end
         
-        -- Codificar para JSON
         local success, encoded = pcall(function()
             return HttpService:JSONEncode(serializedData)
         end)
@@ -444,7 +431,6 @@ local function startCopyProcess()
             ExportBox.Text = encoded
             StatusCopy.Text = string.format("Sucesso! %d objetos copiados.", totalObjects)
             
-            -- Salvar em arquivo automático se o executor permitir
             if hasFileAPI then
                 pcall(function()
                     if not isfolder("MapBackups") then
@@ -495,13 +481,9 @@ local function startImportProcess()
         local total = #objectsList
         local batchSize = 30
         
-        -- Criar Pasta Raiz do Mapa Importado no Workspace
         local importedFolder = Instance.new("Folder")
         importedFolder.Name = "MapaImportado_" .. os.date("%H%M%S")
         importedFolder.Parent = Workspace
-        
-        -- Dicionário para cache de instâncias criadas
-        local createdInstances = {}
         
         for i, itemData in ipairs(objectsList) do
             pcall(function()
@@ -537,10 +519,9 @@ local function startImportProcess()
                 end
                 
                 newObj.Parent = importedFolder
-                createdInstances[itemData.Path] = newObj
             end)
             
-            if i % batchSize == 0 or i == total {
+            if i % batchSize == 0 or i == total then
                 StatusImport.Text = string.format("Importando: %d / %d (%.0f%%)", i, total, (i / total) * 100)
                 task.wait(0.01)
             end
