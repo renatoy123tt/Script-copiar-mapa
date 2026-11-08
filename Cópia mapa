@@ -621,6 +621,23 @@ local function serializeRecord(rec, records)
         end
     end
 
+    -- Força Anchored = true em toda BasePart (inclusive dentro de Models/Folders)
+    -- Só altera o dado salvo; o mapa original não é modificado.
+    local okA, isPart = pcall(function() return obj:IsA("BasePart") end)
+    if okA and isPart then
+        local found = false
+        for _, pair in ipairs(entry.P) do
+            if pair[1] == "Anchored" then
+                pair[2] = true
+                found = true
+                break
+            end
+        end
+        if not found then
+            entry.P[#entry.P + 1] = {"Anchored", true}
+        end
+    end
+
     pcall(function()
         local attrs = {}
         local any = false
