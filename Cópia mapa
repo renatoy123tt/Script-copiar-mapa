@@ -1,7 +1,6 @@
 --[[
-    SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS - Versão 3.4 (cópia completa, hierarquia, terreno, sem jogadores)
+    SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS - Versão 3.4 (com botão de Ancorar Tudo)
     Interface compacta, janela arrastável e ícone flutuante circular
-    Novo: botão "ANCORAR TUDO" na aba COPIAR (ancora todas as partes do Workspace)
 ]]
 
 local Players = game:GetService("Players")
@@ -10,6 +9,8 @@ local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local CollectionService = game:GetService("CollectionService")
 
 local player = Players.LocalPlayer
 local userId = player and player.UserId or 0
@@ -250,12 +251,9 @@ ProgressBarC.BorderSizePixel = 0
 ProgressBarC.Parent = ProgressBgC
 corner(ProgressBarC, 4)
 
--- Botão: ancora todas as partes do Workspace
-local AnchorAllBtn = newButton(CopyContainer, "⚓ ANCORAR TUDO", Theme.Warn, UDim2.new(1, 0, 0, 32), UDim2.new(0, 0, 0, 104), 12)
-
 local CopyCard = Instance.new("Frame")
-CopyCard.Size = UDim2.new(1, 0, 1, -146)
-CopyCard.Position = UDim2.new(0, 0, 0, 142)
+CopyCard.Size = UDim2.new(1, 0, 1, -106)
+CopyCard.Position = UDim2.new(0, 0, 0, 104)
 CopyCard.BackgroundColor3 = Theme.Surface
 CopyCard.BorderSizePixel = 0
 CopyCard.Parent = CopyContainer
@@ -296,8 +294,10 @@ UIListBS.Padding = UDim.new(0, 4)
 UIListBS.SortOrder = Enum.SortOrder.LayoutOrder
 UIListBS.Parent = BackupScroll
 
-local RefreshBtn = newButton(ImportContainer, "↻ Atualizar", Theme.Surface2, UDim2.new(0.4, -3, 0, 36), UDim2.new(0, 0, 0, 126), 12)
-local ImportActionBtn = newButton(ImportContainer, "IMPORTAR", Theme.Accent, UDim2.new(0.6, -3, 0, 36), UDim2.new(0.4, 3, 0, 126), 12)
+-- Botões inferiores da aba Importar (Atualizar, Ancorar, Importar divididos em 3 colunas)
+local RefreshBtn = newButton(ImportContainer, "↻ Atualizar", Theme.Surface2, UDim2.new(0.3, -2, 0, 36), UDim2.new(0, 0, 0, 126), 11)
+local AnchorBtn = newButton(ImportContainer, "⚓ Ancorar", Theme.Surface2, UDim2.new(0.35, -2, 0, 36), UDim2.new(0.3, 2, 0, 126), 11)
+local ImportActionBtn = newButton(ImportContainer, "IMPORTAR", Theme.Accent, UDim2.new(0.35, -2, 0, 36), UDim2.new(0.65, 2, 0, 126), 11)
 
 local StatusImport = newLabel(ImportContainer, "Selecione um dos seus backups na lista.",
     UDim2.new(1, 0, 0, 40), UDim2.new(0, 2, 0, 170), 11)
@@ -319,14 +319,13 @@ FloatBtn.ClipsDescendants = true
 FloatBtn.Visible = false
 FloatBtn.ZIndex = 10
 FloatBtn.Parent = ScreenGui
-corner(FloatBtn, 26) -- metade do tamanho = círculo perfeito
+corner(FloatBtn, 26)
 stroke(FloatBtn, Theme.Accent, 2)
 
 --------------------------------------------------------------------------------
--- 3. SERIALIZAÇÃO
+-- 3. SERIALIZAÇÃO & HELPERS
 --------------------------------------------------------------------------------
 
--- Nome de arquivo seguro
 local function sanitizeName(text)
     text = tostring(text or "")
     text = (text:gsub('[\\/:*?"<>|%c]', ""))
@@ -337,20 +336,34 @@ local function sanitizeName(text)
     return text
 end
 
-local Lighting = game:GetService("Lighting")
-local CollectionService = game:GetService("CollectionService")
+local function isPlayerCharacter(inst)
+    local ok, res = pcall(function()
+        return inst:IsA("Model") and Players:GetPlayerFromCharacter(inst) ~= nil
+    end)
+    return ok and res
+end
 
--- QUALIDADE x VELOCIDADE (valores menores = mais lento e mais seguro)
-local CHUNK_SIZE = 100       -- objetos por arquivo de backup
-local YIELD_EVERY = 20       -- pausa a cada N objetos processados
-local TERRAIN_CHUNK = 32     -- tamanho do bloco de terreno (em voxels de 4 studs)
+-- Função que ancora tudo no Workspace do Studio Lite
+local function anchorAllWorkspace()
+    local count = 0
+    for _, desc in ipairs(Workspace:GetDescendants()) do
+        if desc:IsA("BasePart") and not isPlayerCharacter(desc.Parent) then
+            pcall(function()
+                desc.Anchored = true
+                count = count + 1
+            end)
+        end
+    end
+    StatusImport.Text = string.format("Sucesso! %d peças ancoradas no Workspace.", count)
+end
+
+-- QUALIDADE x VELOCIDADE
+local CHUNK_SIZE = 100
+local YIELD_EVERY = 20
+local TERRAIN_CHUNK = 32
 local BACKUP_VERSION = 4
 
 local activeConn = nil
-
---------------------------------------------------------------------------------
--- Utilidades de arquivo
---------------------------------------------------------------------------------
 
 local function deleteBackupFolder(folderPath)
     pcall(function()
@@ -363,7 +376,6 @@ local function deleteBackupFolder(folderPath)
     end)
 end
 
--- Escreve e confere se o arquivo foi gravado por completo (até 3 tentativas)
 local function writeVerified(path, content)
     for _ = 1, 3 do
         if pcall(writefile, path, content) then
@@ -374,10 +386,6 @@ local function writeVerified(path, content)
     end
     return false
 end
-
---------------------------------------------------------------------------------
--- Codificação de valores (Vector3, Color3, CFrame, Enum, referências, etc.)
---------------------------------------------------------------------------------
 
 local function sn(x)
     if x ~= x then return 0 end
@@ -459,11 +467,6 @@ local function decodeValue(v)
     end
     return nil
 end
-
---------------------------------------------------------------------------------
--- Propriedades copiadas por tipo de objeto (cada grupo vale para a classe e suas
--- subclasses). Para copiar mais propriedades, é só acrescentar nomes aqui.
---------------------------------------------------------------------------------
 
 local textProps = {"Text", "TextColor3", "TextSize", "Font", "FontFace", "TextScaled", "TextWrapped",
     "TextXAlignment", "TextYAlignment", "TextTransparency", "TextStrokeColor3", "TextStrokeTransparency",
@@ -577,10 +580,9 @@ local lightingProps = {"Ambient", "Brightness", "ColorShift_Bottom", "ColorShift
 local workspaceProps = {"Gravity"}
 local terrainProps = {"WaterColor", "WaterReflectance", "WaterTransparency", "WaterWaveSize", "WaterWaveSpeed", "Decoration"}
 
--- Classes que não podem/não devem ser copiadas
 local excludedClasses = {
-    Camera = true, Terrain = true, -- terreno é tratado à parte
-    Script = true, LocalScript = true, ModuleScript = true, -- código-fonte não é acessível
+    Camera = true, Terrain = true,
+    Script = true, LocalScript = true, ModuleScript = true,
     Player = true, PlayerGui = true, Backpack = true, PlayerScripts = true, StarterGear = true,
 }
 
@@ -622,6 +624,21 @@ local function serializeRecord(rec, records)
                     end
                 end
             end
+        end
+    end
+
+    local okA, isPart = pcall(function() return obj:IsA("BasePart") end)
+    if okA and isPart then
+        local found = false
+        for _, pair in ipairs(entry.P) do
+            if pair[1] == "Anchored" then
+                pair[2] = true
+                found = true
+                break
+            end
+        end
+        if not found then
+            entry.P[#entry.P + 1] = {"Anchored", true}
         end
     end
 
@@ -672,7 +689,6 @@ local function rleDecode(arr)
     return out
 end
 
--- retorna: arquivosSalvos, blocosSalvos  (ou nil se cancelado)
 local function copyTerrain(mapFolder, setStatus)
     local terrain = Workspace:FindFirstChildOfClass("Terrain")
     if not terrain then return 0, 0 end
@@ -753,10 +769,6 @@ local function copyTerrain(mapFolder, setStatus)
     return files, saved
 end
 
---------------------------------------------------------------------------------
--- Varredura com streaming (mapas grandes só carregam perto do jogador)
---------------------------------------------------------------------------------
-
 local function streamingSweep(recList, setStatus)
     if not Workspace.StreamingEnabled then return end
 
@@ -820,13 +832,6 @@ local function finishCopy()
     CancelCopyBtn.Visible = false
 end
 
-local function isPlayerCharacter(inst)
-    local ok, res = pcall(function()
-        return inst:IsA("Model") and Players:GetPlayerFromCharacter(inst) ~= nil
-    end)
-    return ok and res
-end
-
 local function runCopy()
     local function setStatus(text) StatusCopy.Text = text end
 
@@ -842,7 +847,6 @@ local function runCopy()
         recList[#recList + 1] = rec
     end
 
-    -- 1) varredura inicial + monitoramento de novos objetos durante o streaming
     setStatus("Escaneando o mapa...")
     activeConn = Workspace.DescendantAdded:Connect(function(d) register(d, "Workspace") end)
 
@@ -855,7 +859,6 @@ local function runCopy()
         end
     end
 
-    -- 2) carregar áreas distantes (se StreamingEnabled)
     streamingSweep(recList, setStatus)
     if cancelRequested then
         setStatus("Cópia cancelada.")
@@ -863,7 +866,6 @@ local function runCopy()
     end
     if activeConn then activeConn:Disconnect(); activeConn = nil end
 
-    -- 3) ordenar em árvore (pai sempre antes dos filhos) ignorando jogadores
     local children = {}
     for _, rec in ipairs(recList) do
         local key
@@ -902,7 +904,6 @@ local function runCopy()
         return
     end
 
-    -- 4) pasta do backup
     local userRootFolder = "MapBackups/User_" .. tostring(userId)
     local backupName = sanitizeName(NameBox.Text)
     if backupName == "" then backupName = "Mapa_" .. os.date("%Y%m%d_%H%M%S") end
@@ -918,7 +919,6 @@ local function runCopy()
         makefolder(mapFolder)
     end)
 
-    -- 5) gravar objetos em partes pequenas, com conferência
     local totalParts = math.ceil(total / CHUNK_SIZE)
     local processed, failedObjects, failedFiles = 0, 0, 0
 
@@ -963,7 +963,6 @@ local function runCopy()
         task.wait(0.05)
     end
 
-    -- 6) terreno
     local terrainFiles, terrainChunks = 0, 0
     if hasTerrain then
         local tf, tc = copyTerrain(mapFolder, setStatus)
@@ -976,7 +975,6 @@ local function runCopy()
         terrainFiles, terrainChunks = tf, tc
     end
 
-    -- 7) serviços (iluminação, gravidade, água do terreno)
     local services = {
         Lighting = serializeProps(Lighting, lightingProps),
         Workspace = serializeProps(Workspace, workspaceProps),
@@ -994,7 +992,6 @@ local function runCopy()
     local okSv, svEnc = pcall(HttpService.JSONEncode, HttpService, services)
     if okSv then writeVerified(mapFolder .. "/Servicos.json", svEnc) end
 
-    -- 8) informações do backup
     writeVerified(mapFolder .. "/Informacoes.json", HttpService:JSONEncode({
         Version = BACKUP_VERSION,
         OwnerUserId = userId,
@@ -1036,60 +1033,7 @@ local function startCopyProcess()
 end
 
 --------------------------------------------------------------------------------
--- ANCORAR TUDO: ancora todas as BasePart do Workspace (inclusive dentro de
--- Models e Folders, em qualquer nível). Ignora o Terrain e os personagens dos
--- jogadores (para ninguém ficar travado no lugar).
---------------------------------------------------------------------------------
-
-local function anchorAllWorkspace()
-    if isRunning then return end
-    isRunning = true
-    AnchorAllBtn.Text = "ANCORANDO..."
-
-    task.spawn(function()
-        local ok, err = pcall(function()
-            local characters = {}
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p.Character then characters[#characters + 1] = p.Character end
-            end
-
-            local function inPlayerCharacter(inst)
-                for _, c in ipairs(characters) do
-                    if inst:IsDescendantOf(c) then return true end
-                end
-                return false
-            end
-
-            StatusCopy.Text = "Ancorando partes do Workspace..."
-            local all = Workspace:GetDescendants()
-            local anchoredNow, alreadyAnchored, n = 0, 0, 0
-
-            for _, d in ipairs(all) do
-                if d:IsA("BasePart") and not d:IsA("Terrain") and not inPlayerCharacter(d) then
-                    if d.Anchored then
-                        alreadyAnchored = alreadyAnchored + 1
-                    elseif pcall(function() d.Anchored = true end) then
-                        anchoredNow = anchoredNow + 1
-                    end
-                end
-                n = n + 1
-                if n % 500 == 0 then
-                    StatusCopy.Text = string.format("Ancorando... %d/%d objetos verificados", n, #all)
-                    task.wait()
-                end
-            end
-
-            StatusCopy.Text = string.format("Pronto! %d partes ancoradas agora (%d já estavam ancoradas).",
-                anchoredNow, alreadyAnchored)
-        end)
-        if not ok then StatusCopy.Text = "Erro ao ancorar: " .. tostring(err) end
-        AnchorAllBtn.Text = "⚓ ANCORAR TUDO"
-        isRunning = false
-    end)
-end
-
---------------------------------------------------------------------------------
--- 5. GERENCIADOR DE BACKUPS
+-- 5. GERENCIADOR DE BACKUPS & IMPORTAÇÃO
 --------------------------------------------------------------------------------
 
 local function loadBackupList()
@@ -1254,11 +1198,9 @@ local function runImport()
                     end
 
                     pcall(function()
-                        if obj:IsA("BasePart") then obj.Anchored = true end -- tudo ancorado
+                        if obj:IsA("BasePart") then obj.Anchored = true end
                     end)
 
-                    -- MeshParts e Unions: o Roblox redefine o tamanho quando a malha carrega,
-                    -- então guardamos o tamanho/posição originais para reaplicar depois
                     pcall(function()
                         if obj:IsA("MeshPart") or obj:IsA("UnionOperation") then
                             local fix = {obj = obj}
@@ -1298,7 +1240,6 @@ local function runImport()
         task.wait(0.02)
     end
 
-    -- referências entre objetos (Part0, Part1, PrimaryPart, Attachment0...)
     for _, p in ipairs(pending) do
         pcall(function()
             if p.id then
@@ -1310,8 +1251,6 @@ local function runImport()
         end)
     end
 
-    -- Verificação final: percorre TODAS as MeshParts/Unions importadas (em qualquer nível de
-    -- Models dentro de Models) e corrige o tamanho até que nenhuma esteja diferente do original
     if #sizeFix > 0 then
         pcall(function()
             local list = {}
@@ -1332,7 +1271,6 @@ local function runImport()
             end)
         end
 
-        -- vigia: se o Roblox redefinir o tamanho depois (malha carregando), corrige de novo
         local watchers = {}
         for _, f in ipairs(sizeFix) do
             local ok, conn = pcall(function()
@@ -1358,7 +1296,7 @@ local function runImport()
                 round, wrongCount, #sizeFix)
             if wrongCount == 0 then
                 stableRounds = stableRounds + 1
-                if stableRounds >= 3 then break end -- 3 rodadas seguidas sem nenhuma errada
+                if stableRounds >= 3 then break end
             else
                 stableRounds = 0
             end
@@ -1369,7 +1307,6 @@ local function runImport()
         end)
     end
 
-    -- serviços e terreno
     local okSv, svRaw = pcall(readfile, selectedBackupPath .. "/Servicos.json")
     local services
     if okSv then
@@ -1476,7 +1413,6 @@ MinimizeBtn.MouseButton1Click:Connect(function()
     FloatBtn.Visible = true
 end)
 
--- Ícone: arrasta livremente; toque simples reabre a janela
 makeDraggable(FloatBtn, FloatBtn, function()
     MainFrame.Visible = true
     FloatBtn.Visible = false
@@ -1484,8 +1420,8 @@ end)
 
 CopyActionBtn.MouseButton1Click:Connect(startCopyProcess)
 CancelCopyBtn.MouseButton1Click:Connect(function() cancelRequested = true end)
-AnchorAllBtn.MouseButton1Click:Connect(anchorAllWorkspace)
 RefreshBtn.MouseButton1Click:Connect(loadBackupList)
+AnchorBtn.MouseButton1Click:Connect(anchorAllWorkspace)
 ImportActionBtn.MouseButton1Click:Connect(startImportProcess)
 
-print("Sistema de Backup v3.4 carregado!")
+print("Sistema de Backup v3.4 carregado com botão de Ancorar!")
