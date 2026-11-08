@@ -1,6 +1,6 @@
 --[[
-    PROJETO: SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS ROBLOX MOBILE
-    Versão 3.0 - Com Ícone Flutuante Arrastável, Isolamento por Jogador e Exclusão Segura
+    SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS - Versão 3.1
+    Interface compacta, janela arrastável e ícone flutuante circular
 ]]
 
 local Players = game:GetService("Players")
@@ -8,319 +8,297 @@ local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local userId = player and player.UserId or 0
-local guiParent = (pcall(function() return CoreGui end) and CoreGui) or player:WaitForChild("PlayerGui")
+local guiParent = (pcall(function() return CoreGui.Name end) and CoreGui) or player:WaitForChild("PlayerGui")
 
--- Verificar suporte a arquivos do executor
-local hasFileAPI = pcall(function()
-    return writefile and readfile and listfiles and makefolder and isfolder
-end)
+local hasFileAPI = type(writefile) == "function" and type(readfile) == "function"
+    and type(listfiles) == "function" and type(makefolder) == "function"
+    and type(isfolder) == "function" and type(delfile) == "function"
 
 local isRunning = false
 local cancelRequested = false
 local selectedBackupPath = nil
 
 --------------------------------------------------------------------------------
--- 1. INTERFACE GRÁFICA (COMPACTA, MODERNA & DARK MODE)
+-- 1. TEMA & HELPERS DE UI
 --------------------------------------------------------------------------------
 
+local Theme = {
+    Bg = Color3.fromRGB(16, 16, 22),
+    Surface = Color3.fromRGB(24, 24, 32),
+    Surface2 = Color3.fromRGB(32, 32, 42),
+    Stroke = Color3.fromRGB(48, 48, 64),
+    Accent = Color3.fromRGB(88, 130, 255),
+    Success = Color3.fromRGB(46, 190, 120),
+    Danger = Color3.fromRGB(220, 70, 80),
+    Warn = Color3.fromRGB(235, 150, 40),
+    Text = Color3.fromRGB(235, 236, 245),
+    Muted = Color3.fromRGB(145, 148, 168),
+}
+
+local function corner(parent, radius)
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, radius)
+    c.Parent = parent
+    return c
+end
+
+local function stroke(parent, color, thickness)
+    local s = Instance.new("UIStroke")
+    s.Color = color
+    s.Thickness = thickness or 1
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = parent
+    return s
+end
+
+local function newButton(parent, text, color, size, pos, textSize)
+    local b = Instance.new("TextButton")
+    b.Size = size
+    b.Position = pos
+    b.BackgroundColor3 = color
+    b.AutoButtonColor = true
+    b.BorderSizePixel = 0
+    b.Font = Enum.Font.GothamBold
+    b.Text = text
+    b.TextColor3 = Theme.Text
+    b.TextSize = textSize or 12
+    b.Parent = parent
+    corner(b, 8)
+    return b
+end
+
+local function newLabel(parent, text, size, pos, textSize, color, font)
+    local l = Instance.new("TextLabel")
+    l.Size = size
+    l.Position = pos
+    l.BackgroundTransparency = 1
+    l.Font = font or Enum.Font.Gotham
+    l.Text = text
+    l.TextColor3 = color or Theme.Muted
+    l.TextSize = textSize or 11
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    l.TextYAlignment = Enum.TextYAlignment.Top
+    l.TextWrapped = true
+    l.Parent = parent
+    return l
+end
+
+-- Arrastar (mouse + toque). Chama onTap se o usuário só tocou, sem arrastar.
 local ScreenGui = Instance.new("ScreenGui")
 ScreenGui.Name = "MapBackupMobileSystem"
 ScreenGui.ResetOnSpawn = false
+ScreenGui.IgnoreGuiInset = true
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = guiParent
 
--- Janela Principal (Mais compacta: 340x410)
+local function makeDraggable(handle, target, onTap)
+    local dragging, moved = false, false
+    local dragStart, startPos
+
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging, moved = true, false
+            dragStart = input.Position
+            startPos = target.AbsolutePosition
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                    if not moved and onTap then onTap() end
+                end
+            end)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if not dragging then return end
+        if input.UserInputType ~= Enum.UserInputType.MouseMovement
+            and input.UserInputType ~= Enum.UserInputType.Touch then return end
+
+        local delta = input.Position - dragStart
+        if not moved and delta.Magnitude > 6 then moved = true end
+        if moved then
+            local vp, sz = ScreenGui.AbsoluteSize, target.AbsoluteSize
+            local x = math.clamp(startPos.X + delta.X, 0, math.max(vp.X - sz.X, 0))
+            local y = math.clamp(startPos.Y + delta.Y, 0, math.max(vp.Y - sz.Y, 0))
+            target.Position = UDim2.fromOffset(x, y)
+        end
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 2. JANELA PRINCIPAL (300 x 330)
+--------------------------------------------------------------------------------
+
 local MainFrame = Instance.new("Frame")
 MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 340, 0, 410)
-MainFrame.Position = UDim2.new(0.5, -170, 0.5, -205)
-MainFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
+MainFrame.Size = UDim2.fromOffset(300, 330)
+MainFrame.Position = UDim2.new(0.5, -150, 0.5, -165)
+MainFrame.BackgroundColor3 = Theme.Bg
 MainFrame.BorderSizePixel = 0
 MainFrame.Parent = ScreenGui
+corner(MainFrame, 14)
+stroke(MainFrame, Theme.Stroke, 1.5)
 
-local UICornerMain = Instance.new("UICorner")
-UICornerMain.CornerRadius = UDim.new(0, 10)
-UICornerMain.Parent = MainFrame
-
-local UIStrokeMain = Instance.new("UIStroke")
-UIStrokeMain.Color = Color3.fromRGB(40, 40, 50)
-UIStrokeMain.Thickness = 1.5
-UIStrokeMain.Parent = MainFrame
-
--- Barra Superior
+-- Barra superior (área de arrastar a janela)
 local TopBar = Instance.new("Frame")
 TopBar.Size = UDim2.new(1, 0, 0, 40)
-TopBar.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
+TopBar.BackgroundColor3 = Theme.Surface
 TopBar.BorderSizePixel = 0
 TopBar.Parent = MainFrame
+corner(TopBar, 14)
 
-local UICornerTop = Instance.new("UICorner")
-UICornerTop.CornerRadius = UDim.new(0, 10)
-TopBar.Parent = MainFrame
+-- Preenche os cantos arredondados de baixo da barra
+local TopBarFill = Instance.new("Frame")
+TopBarFill.Size = UDim2.new(1, 0, 0, 14)
+TopBarFill.Position = UDim2.new(0, 0, 1, -14)
+TopBarFill.BackgroundColor3 = Theme.Surface
+TopBarFill.BorderSizePixel = 0
+TopBarFill.Parent = TopBar
 
-local TitleLabel = Instance.new("TextLabel")
-TitleLabel.Size = UDim2.new(1, -50, 1, 0)
-TitleLabel.Position = UDim2.new(0, 12, 0, 0)
-TitleLabel.BackgroundTransparency = 1
-TitleLabel.Font = Enum.Font.GothamBold
-TitleLabel.Text = "🗺️ Map Backup Mobile"
-TitleLabel.TextColor3 = Color3.fromRGB(235, 235, 245)
-TitleLabel.TextSize = 14
-TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
-TitleLabel.Parent = TopBar
+local AccentDot = Instance.new("Frame")
+AccentDot.Size = UDim2.fromOffset(8, 8)
+AccentDot.Position = UDim2.new(0, 14, 0.5, -4)
+AccentDot.BackgroundColor3 = Theme.Accent
+AccentDot.BorderSizePixel = 0
+AccentDot.Parent = TopBar
+corner(AccentDot, 4)
 
-local MinimizeBtn = Instance.new("TextButton")
-MinimizeBtn.Size = UDim2.new(0, 30, 0, 30)
-MinimizeBtn.Position = UDim2.new(1, -35, 0, 5)
-MinimizeBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
-MinimizeBtn.Font = Enum.Font.GothamBold
-MinimizeBtn.Text = "-"
-MinimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-MinimizeBtn.TextSize = 16
-MinimizeBtn.Parent = TopBar
+newLabel(TopBar, "Map Backup", UDim2.new(1, -90, 1, 0), UDim2.new(0, 30, 0, 0), 14, Theme.Text, Enum.Font.GothamBold).TextYAlignment = Enum.TextYAlignment.Center
 
-local UICornerMin = Instance.new("UICorner")
-UICornerMin.CornerRadius = UDim.new(0, 6)
-UICornerMin.Parent = MinimizeBtn
+local MinimizeBtn = newButton(TopBar, "–", Theme.Surface2, UDim2.fromOffset(28, 28), UDim2.new(1, -36, 0.5, -14), 16)
+MinimizeBtn.ZIndex = 3
+corner(MinimizeBtn, 14)
 
--- Ícone Flutuante Arrastável (ID: 75668683426721)
-local FloatBtn = Instance.new("ImageButton")
-FloatBtn.Name = "FloatButton"
-FloatBtn.Size = UDim2.new(0, 50, 0, 50)
-FloatBtn.Position = UDim2.new(0, 20, 0.75, 0)
-FloatBtn.BackgroundColor3 = Color3.fromRGB(26, 26, 32)
-FloatBtn.Image = "rbxassetid://75668683426721"
-FloatBtn.Visible = false
-FloatBtn.Parent = ScreenGui
+makeDraggable(TopBar, MainFrame)
 
-local UICornerFloat = Instance.new("UICorner")
-UICornerFloat.CornerRadius = UDim.new(1, 0)
-FloatBtn.Parent = ScreenGui
-
-local UIStrokeFloat = Instance.new("UIStroke")
-UIStrokeFloat.Color = Color3.fromRGB(0, 140, 255)
-UIStrokeFloat.Thickness = 2
-UIStrokeFloat.Parent = FloatBtn
-
--- Sistema de Arrastar o Ícone (Touch & Mouse para Android)
-local dragging, dragInput, dragStart, startPos
-FloatBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = FloatBtn.Position
-        input.Changed:Connect(function()
-            if input.UserInputState == Enum.UserInputState.End then
-                dragging = false
-            end
-        end)
-    end
-end)
-
-FloatBtn.InputChanged:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-        dragInput = input
-    end
-end)
-
-UserInputService.InputChanged:Connect(function(input)
-    if input == dragInput and dragging then
-        local delta = input.Position - dragStart
-        FloatBtn.Position = UDim2.new(
-            startPos.X.Scale, 
-            startPos.X.Offset + delta.X, 
-            startPos.Y.Scale, 
-            startPos.Y.Offset + delta.Y
-        )
-    end
-end)
-
--- Navegação por Abas
+-- Abas
 local TabBar = Instance.new("Frame")
-TabBar.Size = UDim2.new(1, -20, 0, 34)
-TabBar.Position = UDim2.new(0, 10, 0, 50)
-TabBar.BackgroundColor3 = Color3.fromRGB(24, 24, 30)
+TabBar.Size = UDim2.new(1, -20, 0, 32)
+TabBar.Position = UDim2.new(0, 10, 0, 48)
+TabBar.BackgroundColor3 = Theme.Surface
 TabBar.BorderSizePixel = 0
 TabBar.Parent = MainFrame
+corner(TabBar, 9)
 
-local UICornerTab = Instance.new("UICorner")
-UICornerTab.CornerRadius = UDim.new(0, 6)
-TabBar.Parent = MainFrame
-
-local TabCopyBtn = Instance.new("TextButton")
-TabCopyBtn.Size = UDim2.new(0.5, -3, 1, -4)
-TabCopyBtn.Position = UDim2.new(0, 2, 0, 2)
-TabCopyBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
-TabCopyBtn.Font = Enum.Font.GothamBold
-TabCopyBtn.Text = "COPIAR"
-TabCopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-TabCopyBtn.TextSize = 12
-TabCopyBtn.Parent = TabBar
-
-local UICornerTC = Instance.new("UICorner")
-UICornerTC.CornerRadius = UDim.new(0, 5)
-UICornerTC.Parent = TabCopyBtn
-
-local TabImportBtn = Instance.new("TextButton")
-TabImportBtn.Size = UDim2.new(0.5, -3, 1, -4)
-TabImportBtn.Position = UDim2.new(0.5, 1, 0, 2)
-TabImportBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-TabImportBtn.Font = Enum.Font.GothamBold
-TabImportBtn.Text = "IMPORTAR"
-TabImportBtn.TextColor3 = Color3.fromRGB(150, 150, 165)
-TabImportBtn.TextSize = 12
-TabImportBtn.Parent = TabBar
-
-local UICornerTI = Instance.new("UICorner")
-UICornerTI.CornerRadius = UDim.new(0, 5)
-UICornerTI.Parent = TabImportBtn
+local TabCopyBtn = newButton(TabBar, "COPIAR", Theme.Accent, UDim2.new(0.5, -4, 1, -6), UDim2.new(0, 3, 0, 3), 11)
+local TabImportBtn = newButton(TabBar, "IMPORTAR", Theme.Surface, UDim2.new(0.5, -4, 1, -6), UDim2.new(0.5, 1, 0, 3), 11)
+TabImportBtn.TextColor3 = Theme.Muted
+corner(TabCopyBtn, 7)
+corner(TabImportBtn, 7)
 
 -- Containers
 local CopyContainer = Instance.new("Frame")
-CopyContainer.Size = UDim2.new(1, -20, 1, -95)
-CopyContainer.Position = UDim2.new(0, 10, 0, 90)
+CopyContainer.Size = UDim2.new(1, -20, 1, -92)
+CopyContainer.Position = UDim2.new(0, 10, 0, 88)
 CopyContainer.BackgroundTransparency = 1
 CopyContainer.Parent = MainFrame
 
 local ImportContainer = Instance.new("Frame")
-ImportContainer.Size = UDim2.new(1, -20, 1, -95)
-ImportContainer.Position = UDim2.new(0, 10, 0, 90)
+ImportContainer.Size = CopyContainer.Size
+ImportContainer.Position = CopyContainer.Position
 ImportContainer.BackgroundTransparency = 1
 ImportContainer.Visible = false
 ImportContainer.Parent = MainFrame
 
 --------------------------------------------------------------------------------
--- ABA 1: COPIAR MAPA
+-- ABA COPIAR
 --------------------------------------------------------------------------------
 
-local CopyActionBtn = Instance.new("TextButton")
-CopyActionBtn.Size = UDim2.new(1, 0, 0, 40)
-CopyActionBtn.Position = UDim2.new(0, 0, 0, 10)
-CopyActionBtn.BackgroundColor3 = Color3.fromRGB(0, 170, 90)
-CopyActionBtn.Font = Enum.Font.GothamBold
-CopyActionBtn.Text = "CRIAR BACKUP EM PARTES"
-CopyActionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-CopyActionBtn.TextSize = 13
-CopyActionBtn.Parent = CopyContainer
-
-local UICornerCAB = Instance.new("UICorner")
-UICornerCAB.CornerRadius = UDim.new(0, 8)
-UICornerCAB.Parent = CopyActionBtn
-
-local CancelCopyBtn = Instance.new("TextButton")
-CancelCopyBtn.Size = UDim2.new(1, 0, 0, 35)
-CancelCopyBtn.Position = UDim2.new(0, 0, 0, 58)
-CancelCopyBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-CancelCopyBtn.Font = Enum.Font.GothamBold
-CancelCopyBtn.Text = "CANCELAR"
-CancelCopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-CancelCopyBtn.TextSize = 12
+local CopyActionBtn = newButton(CopyContainer, "CRIAR BACKUP", Theme.Success, UDim2.new(1, 0, 0, 38), UDim2.new(0, 0, 0, 0), 13)
+local CancelCopyBtn = newButton(CopyContainer, "CANCELAR", Theme.Danger, UDim2.new(1, 0, 0, 38), UDim2.new(0, 0, 0, 0), 13)
 CancelCopyBtn.Visible = false
-CancelCopyBtn.Parent = CopyContainer
-
-local UICornerCCB = Instance.new("UICorner")
-UICornerCCB.CornerRadius = UDim.new(0, 8)
-UICornerCCB.Parent = CancelCopyBtn
 
 local ProgressBgC = Instance.new("Frame")
-ProgressBgC.Size = UDim2.new(1, 0, 0, 12)
-ProgressBgC.Position = UDim2.new(0, 0, 0, 110)
-ProgressBgC.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+ProgressBgC.Size = UDim2.new(1, 0, 0, 8)
+ProgressBgC.Position = UDim2.new(0, 0, 0, 50)
+ProgressBgC.BackgroundColor3 = Theme.Surface2
+ProgressBgC.BorderSizePixel = 0
 ProgressBgC.Parent = CopyContainer
-
-local UICornerPGC = Instance.new("UICorner")
-UICornerPGC.CornerRadius = UDim.new(1, 0)
-UICornerPGC.Parent = ProgressBgC
+corner(ProgressBgC, 4)
 
 local ProgressBarC = Instance.new("Frame")
 ProgressBarC.Size = UDim2.new(0, 0, 1, 0)
-ProgressBarC.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
+ProgressBarC.BackgroundColor3 = Theme.Accent
+ProgressBarC.BorderSizePixel = 0
 ProgressBarC.Parent = ProgressBgC
+corner(ProgressBarC, 4)
 
-local UICornerPBarC = Instance.new("UICorner")
-UICornerPBarC.CornerRadius = UDim.new(1, 0)
-UICornerPBarC.Parent = ProgressBarC
+local CopyCard = Instance.new("Frame")
+CopyCard.Size = UDim2.new(1, 0, 1, -68)
+CopyCard.Position = UDim2.new(0, 0, 0, 66)
+CopyCard.BackgroundColor3 = Theme.Surface
+CopyCard.BorderSizePixel = 0
+CopyCard.Parent = CopyContainer
+corner(CopyCard, 9)
 
-local StatusCopy = Instance.new("TextLabel")
-StatusCopy.Size = UDim2.new(1, 0, 0, 140)
-StatusCopy.Position = UDim2.new(0, 0, 0, 130)
-StatusCopy.BackgroundTransparency = 1
-StatusCopy.Font = Enum.Font.Gotham
-StatusCopy.Text = "Pronto para iniciar. Seus backups serão salvos com segurança na sua pasta privada isolada por ID de jogador."
-StatusCopy.TextColor3 = Color3.fromRGB(160, 160, 175)
-StatusCopy.TextSize = 11
-StatusCopy.TextXAlignment = Enum.TextXAlignment.Left
-StatusCopy.TextYAlignment = Enum.TextYAlignment.Top
-StatusCopy.TextWrapped = true
-StatusCopy.Parent = CopyContainer
+local StatusCopy = newLabel(CopyCard,
+    "Pronto para iniciar. Seus backups ficam salvos na sua pasta privada, isolada por ID de jogador.",
+    UDim2.new(1, -20, 1, -16), UDim2.new(0, 10, 0, 8), 11)
+
+local function setProgress(pct)
+    TweenService:Create(ProgressBarC, TweenInfo.new(0.15), {Size = UDim2.new(pct, 0, 1, 0)}):Play()
+end
 
 --------------------------------------------------------------------------------
--- ABA 2: IMPORTAR MAPA & GERENCIADOR PRIVADO COM EXCLUSÃO
+-- ABA IMPORTAR
 --------------------------------------------------------------------------------
-
-local RefreshBtn = Instance.new("TextButton")
-RefreshBtn.Size = UDim2.new(1, 0, 0, 32)
-RefreshBtn.Position = UDim2.new(0, 0, 0, 10)
-RefreshBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
-RefreshBtn.Font = Enum.Font.GothamBold
-RefreshBtn.Text = "🔄 Atualizar Meus Backups"
-RefreshBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-RefreshBtn.TextSize = 12
-RefreshBtn.Parent = ImportContainer
-
-local UICornerRB = Instance.new("UICorner")
-UICornerRB.CornerRadius = UDim.new(0, 7)
-UICornerRB.Parent = RefreshBtn
 
 local BackupScroll = Instance.new("ScrollingFrame")
-BackupScroll.Size = UDim2.new(1, 0, 0, 145)
-BackupScroll.Position = UDim2.new(0, 0, 0, 50)
-BackupScroll.BackgroundColor3 = Color3.fromRGB(14, 14, 18)
+BackupScroll.Size = UDim2.new(1, 0, 0, 118)
+BackupScroll.BackgroundColor3 = Theme.Surface
 BackupScroll.BorderSizePixel = 0
-BackupScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+BackupScroll.CanvasSize = UDim2.new()
+BackupScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+BackupScroll.ScrollBarThickness = 3
+BackupScroll.ScrollBarImageColor3 = Theme.Accent
 BackupScroll.Parent = ImportContainer
+corner(BackupScroll, 9)
 
-local UICornerBS = Instance.new("UICorner")
-UICornerBS.CornerRadius = UDim.new(0, 8)
-UICornerBS.Parent = BackupScroll
+local ScrollPad = Instance.new("UIPadding")
+ScrollPad.PaddingTop = UDim.new(0, 5)
+ScrollPad.PaddingBottom = UDim.new(0, 5)
+ScrollPad.PaddingLeft = UDim.new(0, 5)
+ScrollPad.PaddingRight = UDim.new(0, 8)
+ScrollPad.Parent = BackupScroll
 
 local UIListBS = Instance.new("UIListLayout")
 UIListBS.Padding = UDim.new(0, 4)
 UIListBS.SortOrder = Enum.SortOrder.LayoutOrder
 UIListBS.Parent = BackupScroll
 
-local ImportActionBtn = Instance.new("TextButton")
-ImportActionBtn.Size = UDim2.new(1, 0, 0, 40)
-ImportActionBtn.Position = UDim2.new(0, 0, 0, 202)
-ImportActionBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
-ImportActionBtn.Font = Enum.Font.GothamBold
-ImportActionBtn.Text = "IMPORTAR SELECIONADO"
-ImportActionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-ImportActionBtn.TextSize = 12
-ImportActionBtn.Parent = ImportContainer
+local RefreshBtn = newButton(ImportContainer, "↻ Atualizar", Theme.Surface2, UDim2.new(0.4, -3, 0, 36), UDim2.new(0, 0, 0, 126), 12)
+local ImportActionBtn = newButton(ImportContainer, "IMPORTAR", Theme.Accent, UDim2.new(0.6, -3, 0, 36), UDim2.new(0.4, 3, 0, 126), 12)
 
-local UICornerIAB = Instance.new("UICorner")
-UICornerIAB.CornerRadius = UDim.new(0, 8)
-UICornerIAB.Parent = ImportActionBtn
-
-local StatusImport = Instance.new("TextLabel")
-StatusImport.Size = UDim2.new(1, 0, 0, 45)
-StatusImport.Position = UDim2.new(0, 0, 0, 248)
-StatusImport.BackgroundTransparency = 1
-StatusImport.Font = Enum.Font.Gotham
-StatusImport.Text = "Selecione um dos seus backups na lista acima."
-StatusImport.TextColor3 = Color3.fromRGB(160, 160, 175)
-StatusImport.TextSize = 11
-StatusImport.TextXAlignment = Enum.TextXAlignment.Left
-StatusImport.TextYAlignment = Enum.TextYAlignment.Top
-StatusImport.TextWrapped = true
-StatusImport.Parent = ImportContainer
+local StatusImport = newLabel(ImportContainer, "Selecione um dos seus backups na lista.",
+    UDim2.new(1, 0, 0, 40), UDim2.new(0, 2, 0, 170), 11)
 
 --------------------------------------------------------------------------------
--- 2. SERIALIZAÇÃO DE OBJETOS
+-- ÍCONE FLUTUANTE CIRCULAR (arrastável)
+--------------------------------------------------------------------------------
+
+local FloatBtn = Instance.new("ImageButton")
+FloatBtn.Name = "FloatButton"
+FloatBtn.Size = UDim2.fromOffset(52, 52)
+FloatBtn.Position = UDim2.new(0, 20, 0.7, 0)
+FloatBtn.BackgroundColor3 = Theme.Surface
+FloatBtn.BorderSizePixel = 0
+FloatBtn.AutoButtonColor = false
+FloatBtn.Image = "rbxassetid://75668683426721"
+FloatBtn.ScaleType = Enum.ScaleType.Crop
+FloatBtn.ClipsDescendants = true
+FloatBtn.Visible = false
+FloatBtn.ZIndex = 10
+FloatBtn.Parent = ScreenGui
+corner(FloatBtn, 26) -- metade do tamanho = círculo perfeito
+stroke(FloatBtn, Theme.Accent, 2)
+
+--------------------------------------------------------------------------------
+-- 3. SERIALIZAÇÃO
 --------------------------------------------------------------------------------
 
 local supportedClasses = {
@@ -341,14 +319,14 @@ end
 local function serializeObject(obj, parentPath)
     if not supportedClasses[obj.ClassName] then return nil end
     if obj == ScreenGui then return nil end
-    
+
     local data = {
         Name = obj.Name,
         ClassName = obj.ClassName,
         Path = parentPath .. "/" .. obj.Name,
         Properties = {}
     }
-    
+
     pcall(function()
         if obj:IsA("BasePart") then
             data.Properties.Size = {obj.Size.X, obj.Size.Y, obj.Size.Z}
@@ -360,9 +338,10 @@ local function serializeObject(obj, parentPath)
             data.Properties.Anchored = obj.Anchored
             data.Properties.CanCollide = obj.CanCollide
             data.Properties.CastShadow = obj.CastShadow
-        elseif obj:IsA("MeshPart") then
-            data.Properties.MeshId = obj.MeshId
-            data.Properties.TextureID = obj.TextureID
+            if obj:IsA("MeshPart") then
+                data.Properties.MeshId = obj.MeshId
+                data.Properties.TextureID = obj.TextureID
+            end
         elseif obj:IsA("Decal") or obj:IsA("Texture") then
             data.Properties.Texture = obj.Texture
             data.Properties.Transparency = obj.Transparency
@@ -373,306 +352,289 @@ local function serializeObject(obj, parentPath)
             data.Properties.Enabled = obj.Enabled
         end
     end)
-    
+
     return data
 end
 
 --------------------------------------------------------------------------------
--- 3. PROCESSO DE CÓPIA ISOLADO POR JOGADOR (USER ID)
+-- 4. PROCESSO DE CÓPIA
 --------------------------------------------------------------------------------
+
+local function finishCopy()
+    isRunning = false
+    CopyActionBtn.Visible = true
+    CancelCopyBtn.Visible = false
+end
 
 local function startCopyProcess()
     if isRunning then return end
     if not hasFileAPI then
-        StatusCopy.Text = "Erro: Sem permissão de escrita de arquivos no executor."
+        StatusCopy.Text = "Erro: seu executor não suporta escrita de arquivos."
         return
     end
-    
+
     isRunning = true
     cancelRequested = false
     CopyActionBtn.Visible = false
     CancelCopyBtn.Visible = true
     StatusCopy.Text = "Escaneando Workspace..."
-    
+    setProgress(0)
+
     task.spawn(function()
         local objectsToProcess = {}
-        
+
         local function scan(item, path)
             for _, child in ipairs(item:GetChildren()) do
-                if child ~= ScreenGui and child.Name ~= "PlayerGui" then
-                    if supportedClasses[child.ClassName] then
-                        table.insert(objectsToProcess, {obj = child, path = path})
-                        scan(child, path .. "/" .. child.Name)
-                    end
+                if supportedClasses[child.ClassName] then
+                    table.insert(objectsToProcess, {obj = child, path = path})
+                    scan(child, path .. "/" .. child.Name)
                 end
             end
         end
-        
+
         pcall(function() scan(Workspace, "Workspace") end)
-        
+
         local totalObjects = #objectsToProcess
         if totalObjects == 0 then
             StatusCopy.Text = "Nenhum objeto compatível encontrado."
-            isRunning = false
-            CopyActionBtn.Visible = true
-            CancelCopyBtn.Visible = false
+            finishCopy()
             return
         end
-        
+
         local chunkSize = 150
         local totalParts = math.ceil(totalObjects / chunkSize)
-        
-        -- DIRETÓRIO PRIVADO DO JOGADOR
+
         local userRootFolder = "MapBackups/User_" .. tostring(userId)
         local mapFolderName = userRootFolder .. "/Mapa_" .. os.date("%Y%m%d_%H%M%S")
-        
+
         pcall(function()
             if not isfolder("MapBackups") then makefolder("MapBackups") end
             if not isfolder(userRootFolder) then makefolder(userRootFolder) end
             makefolder(mapFolderName)
         end)
-        
-        local infoData = {
-            OwnerUserId = userId,
-            Timestamp = os.time(),
-            TotalObjects = totalObjects,
-            TotalParts = totalParts
-        }
+
         pcall(function()
-            writefile(mapFolderName .. "/Informacoes.json", HttpService:JSONEncode(infoData))
+            writefile(mapFolderName .. "/Informacoes.json", HttpService:JSONEncode({
+                OwnerUserId = userId,
+                Timestamp = os.time(),
+                TotalObjects = totalObjects,
+                TotalParts = totalParts
+            }))
         end)
-        
+
         local processed = 0
         for partIndex = 1, totalParts do
             if cancelRequested then
                 StatusCopy.Text = "Cópia cancelada."
-                isRunning = false
-                CopyActionBtn.Visible = true
-                CancelCopyBtn.Visible = false
-                ProgressBarC.Size = UDim2.new(0, 0, 1, 0)
+                setProgress(0)
+                finishCopy()
                 return
             end
-            
+
             local partObjects = {}
             local startIndex = (partIndex - 1) * chunkSize + 1
             local endIndex = math.min(partIndex * chunkSize, totalObjects)
-            
+
             for i = startIndex, endIndex do
                 local item = objectsToProcess[i]
                 local serialized = serializeObject(item.obj, item.path)
-                if serialized then
-                    table.insert(partObjects, serialized)
-                end
+                if serialized then table.insert(partObjects, serialized) end
                 processed = processed + 1
             end
-            
-            local partData = { Objects = partObjects }
-            local success, encoded = pcall(function()
-                return HttpService:JSONEncode(partData)
+
+            local ok, encoded = pcall(function()
+                return HttpService:JSONEncode({Objects = partObjects})
             end)
-            
-            if success then
+            if ok then
                 pcall(function()
                     writefile(string.format("%s/Parte_%03d.json", mapFolderName, partIndex), encoded)
                 end)
             end
-            
+
             local pct = processed / totalObjects
-            ProgressBarC.Size = UDim2.new(pct, 0, 1, 0)
-            StatusCopy.Text = string.format("Salvando Parte %d/%d (%.0f%%)", partIndex, totalParts, pct * 100)
+            setProgress(pct)
+            StatusCopy.Text = string.format("Salvando parte %d/%d (%.0f%%)", partIndex, totalParts, pct * 100)
             task.wait(0.02)
         end
-        
+
         StatusCopy.Text = string.format("Sucesso! %d objetos salvos no seu backup privado.", totalObjects)
-        isRunning = false
-        CopyActionBtn.Visible = true
-        CancelCopyBtn.Visible = false
+        finishCopy()
     end)
 end
 
 --------------------------------------------------------------------------------
--- 4. GERENCIADOR DE BACKUPS PRIVADOS & SISTEMA DE EXCLUSÃO
+-- 5. GERENCIADOR DE BACKUPS
 --------------------------------------------------------------------------------
+
+local function deleteBackupFolder(folderPath)
+    pcall(function()
+        for _, f in ipairs(listfiles(folderPath)) do
+            pcall(delfile, f)
+        end
+        if type(delfolder) == "function" then
+            pcall(delfolder, folderPath)
+        end
+    end)
+end
 
 local function loadBackupList()
     for _, child in ipairs(BackupScroll:GetChildren()) do
-        if child:IsA("Frame") or child:IsA("TextButton") then
-            child:Destroy()
-        end
+        if child:IsA("Frame") then child:Destroy() end
     end
-    
+
     if not hasFileAPI then
-        StatusImport.Text = "Erro: Sem acesso a arquivos do executor."
+        StatusImport.Text = "Erro: sem acesso a arquivos do executor."
         return
     end
-    
+
     pcall(function()
         local userRootFolder = "MapBackups/User_" .. tostring(userId)
         if not isfolder("MapBackups") then makefolder("MapBackups") end
         if not isfolder(userRootFolder) then makefolder(userRootFolder) end
-        
+
         local folders = listfiles(userRootFolder)
-        local yPos = 0
-        
-        for _, folderPath in ipairs(folders) do
-            local folderName = folderPath:match("([^/]+)$") or folderPath
-            
-            -- Container da Linha (Botão de Seleção + Botão de Exclusão)
+        if #folders == 0 then
+            StatusImport.Text = "Você ainda não tem backups."
+            return
+        end
+
+        local rows = {}
+        for index, folderPath in ipairs(folders) do
+            local folderName = folderPath:match("([^/\\]+)$") or folderPath
+
             local itemFrame = Instance.new("Frame")
-            itemFrame.Size = UDim2.new(1, -6, 0, 36)
+            itemFrame.Size = UDim2.new(1, 0, 0, 30)
             itemFrame.BackgroundTransparency = 1
+            itemFrame.LayoutOrder = index
             itemFrame.Parent = BackupScroll
-            
+
             local selectBtn = Instance.new("TextButton")
-            selectBtn.Size = UDim2.new(1, -45, 1, 0)
-            selectBtn.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
+            selectBtn.Size = UDim2.new(1, -36, 1, 0)
+            selectBtn.BackgroundColor3 = Theme.Surface2
+            selectBtn.BorderSizePixel = 0
             selectBtn.Font = Enum.Font.Gotham
-            selectBtn.Text = "📁 " .. folderName
-            selectBtn.TextColor3 = Color3.fromRGB(230, 230, 240)
+            selectBtn.Text = "  📁 " .. folderName
+            selectBtn.TextColor3 = Theme.Text
             selectBtn.TextSize = 11
             selectBtn.TextXAlignment = Enum.TextXAlignment.Left
+            selectBtn.TextTruncate = Enum.TextTruncate.AtEnd
             selectBtn.Parent = itemFrame
-            
-            local UICornerSB = Instance.new("UICorner")
-            UICornerSB.CornerRadius = UDim.new(0, 6)
-            UICornerSB.Parent = selectBtn
-            
-            -- Botão de Exclusão (Lixeira) com Confirmação
+            corner(selectBtn, 7)
+
             local deleteBtn = Instance.new("TextButton")
-            deleteBtn.Size = UDim2.new(0, 38, 1, 0)
-            deleteBtn.Position = UDim2.new(1, -40, 0, 0)
-            deleteBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+            deleteBtn.Size = UDim2.new(0, 30, 1, 0)
+            deleteBtn.Position = UDim2.new(1, -30, 0, 0)
+            deleteBtn.BackgroundColor3 = Theme.Danger
+            deleteBtn.BorderSizePixel = 0
             deleteBtn.Font = Enum.Font.GothamBold
             deleteBtn.Text = "🗑️"
-            deleteBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            deleteBtn.TextColor3 = Theme.Text
             deleteBtn.TextSize = 12
             deleteBtn.Parent = itemFrame
-            
-            local UICornerDB = Instance.new("UICorner")
-            UICornerDB.CornerRadius = UDim.new(0, 6)
-            UICornerDB.Parent = deleteBtn
-            
+            corner(deleteBtn, 7)
+
+            rows[selectBtn] = true
+            if folderPath == selectedBackupPath then
+                selectBtn.BackgroundColor3 = Theme.Accent
+            end
+
             local confirmDelete = false
             deleteBtn.MouseButton1Click:Connect(function()
                 if not confirmDelete then
                     confirmDelete = true
                     deleteBtn.Text = "⚠️"
-                    deleteBtn.BackgroundColor3 = Color3.fromRGB(220, 120, 20)
+                    deleteBtn.BackgroundColor3 = Theme.Warn
                     task.delay(3, function()
                         if deleteBtn and deleteBtn.Parent then
                             confirmDelete = false
                             deleteBtn.Text = "🗑️"
-                            deleteBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+                            deleteBtn.BackgroundColor3 = Theme.Danger
                         end
                     end)
                 else
-                    -- Exclusão de arquivos do backup
-                    pcall(function()
-                        local files = listfiles(folderPath)
-                        for _, f in ipairs(files) do
-                            pcall(function() delfile(f) end)
-                        end
-                        if folderPath == selectedBackupPath then
-                            selectedBackupPath = nil
-                        end
-                    end)
-                    StatusImport.Text = "Backup excluído com sucesso!"
+                    deleteBackupFolder(folderPath)
+                    if folderPath == selectedBackupPath then selectedBackupPath = nil end
+                    StatusImport.Text = "Backup excluído."
                     loadBackupList()
                 end
             end)
-            
+
             selectBtn.MouseButton1Click:Connect(function()
                 selectedBackupPath = folderPath
                 StatusImport.Text = "Selecionado: " .. folderName
-                for _, child in ipairs(BackupScroll:GetChildren()) do
-                    if child:IsA("Frame") then
-                        local btn = child:FindFirstChildWhichIsA("TextButton")
-                        if btn and btn ~= deleteBtn then
-                            btn.BackgroundColor3 = Color3.fromRGB(26, 26, 34)
-                        end
-                    end
+                for btn in pairs(rows) do
+                    btn.BackgroundColor3 = Theme.Surface2
                 end
-                selectBtn.BackgroundColor3 = Color3.fromRGB(0, 100, 180)
+                selectBtn.BackgroundColor3 = Theme.Accent
             end)
-            
-            yPos = yPos + 40
         end
-        BackupScroll.CanvasSize = UDim2.new(0, 0, 0, yPos)
     end)
 end
 
 local function startImportProcess()
     if isRunning then return end
     if not selectedBackupPath then
-        StatusImport.Text = "Erro: Selecione um backup na lista!"
+        StatusImport.Text = "Erro: selecione um backup na lista!"
         return
     end
-    
+
     isRunning = true
     StatusImport.Text = "Verificando permissões e lendo partes..."
-    
+
     task.spawn(function()
-        local successInfo, infoRaw = pcall(function()
-            return readfile(selectedBackupPath .. "/Informacoes.json")
-        end)
-        
-        if not successInfo then
-            StatusImport.Text = "Erro: Arquivo de informações corrompido ou inexistente."
+        local okInfo, infoRaw = pcall(readfile, selectedBackupPath .. "/Informacoes.json")
+        if not okInfo then
+            StatusImport.Text = "Erro: arquivo de informações corrompido ou inexistente."
             isRunning = false
             return
         end
-        
-        local successDecInfo, infoData = pcall(function()
-            return HttpService:JSONDecode(infoRaw)
-        end)
-        
-        if not successDecInfo or infoData.OwnerUserId ~= userId then
-            StatusImport.Text = "Erro: Acesso negado! Este backup pertence a outro jogador."
+
+        local okDec, infoData = pcall(function() return HttpService:JSONDecode(infoRaw) end)
+        if not okDec or infoData.OwnerUserId ~= userId then
+            StatusImport.Text = "Acesso negado! Este backup pertence a outro jogador."
             isRunning = false
             return
         end
-        
+
         local totalParts = infoData.TotalParts or 1
         local importedFolder = Instance.new("Folder")
         importedFolder.Name = "MapaImportado_" .. os.date("%H%M%S")
         importedFolder.Parent = Workspace
-        
+
         local totalImported = 0
-        
+
         for partIdx = 1, totalParts do
-            local partFileName = string.format("%s/Parte_%03d.json", selectedBackupPath, partIdx)
-            local successPart, partRaw = pcall(function()
-                return readfile(partFileName)
-            end)
-            
-            if successPart then
-                local successDecPart, partData = pcall(function()
-                    return HttpService:JSONDecode(partRaw)
-                end)
-                
-                if successDecPart and partData.Objects then
+            local okPart, partRaw = pcall(readfile, string.format("%s/Parte_%03d.json", selectedBackupPath, partIdx))
+
+            if okPart then
+                local okDecPart, partData = pcall(function() return HttpService:JSONDecode(partRaw) end)
+
+                if okDecPart and partData.Objects then
                     for _, itemData in ipairs(partData.Objects) do
                         pcall(function()
                             local newObj = Instance.new(itemData.ClassName)
                             newObj.Name = itemData.Name
-                            
+
                             local props = itemData.Properties
                             if props then
                                 if newObj:IsA("BasePart") then
                                     if props.Size then newObj.Size = Vector3.new(unpack(props.Size)) end
                                     if props.CFrame then newObj.CFrame = deserializeCFrame(props.CFrame) end
                                     if props.Color then newObj.Color = Color3.new(unpack(props.Color)) end
-                                    if props.Material and Enum.Material[props.Material] then 
-                                        newObj.Material = Enum.Material[props.Material] 
+                                    if props.Material and Enum.Material[props.Material] then
+                                        newObj.Material = Enum.Material[props.Material]
                                     end
                                     if props.Transparency then newObj.Transparency = props.Transparency end
                                     if props.Reflectance then newObj.Reflectance = props.Reflectance end
                                     if props.Anchored ~= nil then newObj.Anchored = props.Anchored end
                                     if props.CanCollide ~= nil then newObj.CanCollide = props.CanCollide end
                                     if props.CastShadow ~= nil then newObj.CastShadow = props.CastShadow end
-                                elseif newObj:IsA("MeshPart") then
-                                    if props.MeshId then newObj.MeshId = props.MeshId end
-                                    if props.TextureID then newObj.TextureID = props.TextureID end
+                                    if newObj:IsA("MeshPart") then
+                                        -- MeshId/TextureID só podem ser definidos na criação em alguns contextos
+                                        pcall(function()
+                                            if props.TextureID then newObj.TextureID = props.TextureID end
+                                        end)
+                                    end
                                 elseif newObj:IsA("Decal") or newObj:IsA("Texture") then
                                     if props.Texture then newObj.Texture = props.Texture end
                                     if props.Transparency then newObj.Transparency = props.Transparency end
@@ -683,61 +645,54 @@ local function startImportProcess()
                                     if props.Enabled ~= nil then newObj.Enabled = props.Enabled end
                                 end
                             end
-                            
+
                             newObj.Parent = importedFolder
                             totalImported = totalImported + 1
                         end)
                     end
                 end
             end
-            
-            StatusImport.Text = string.format("Importando Parte %d / %d", partIdx, totalParts)
+
+            StatusImport.Text = string.format("Importando parte %d / %d", partIdx, totalParts)
             task.wait(0.02)
         end
-        
-        StatusImport.Text = string.format("Sucesso! %d objetos importados com segurança.", totalImported)
+
+        StatusImport.Text = string.format("Sucesso! %d objetos importados.", totalImported)
         isRunning = false
     end)
 end
 
 --------------------------------------------------------------------------------
--- 5. EVENTOS DA INTERFACE & MINIMIZAÇÃO
+-- 6. EVENTOS
 --------------------------------------------------------------------------------
 
-TabCopyBtn.MouseButton1Click:Connect(function()
-    CopyContainer.Visible = true
-    ImportContainer.Visible = false
-    TabCopyBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
-    TabCopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    TabImportBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-    TabImportBtn.TextColor3 = Color3.fromRGB(150, 150, 165)
-end)
+local function setTab(copy)
+    CopyContainer.Visible = copy
+    ImportContainer.Visible = not copy
+    TabCopyBtn.BackgroundColor3 = copy and Theme.Accent or Theme.Surface
+    TabCopyBtn.TextColor3 = copy and Theme.Text or Theme.Muted
+    TabImportBtn.BackgroundColor3 = copy and Theme.Surface or Theme.Accent
+    TabImportBtn.TextColor3 = copy and Theme.Muted or Theme.Text
+    if not copy then loadBackupList() end
+end
 
-TabImportBtn.MouseButton1Click:Connect(function()
-    CopyContainer.Visible = false
-    ImportContainer.Visible = true
-    TabImportBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 255)
-    TabImportBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    TabCopyBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
-    TabCopyBtn.TextColor3 = Color3.fromRGB(150, 150, 165)
-    loadBackupList()
-end)
+TabCopyBtn.MouseButton1Click:Connect(function() setTab(true) end)
+TabImportBtn.MouseButton1Click:Connect(function() setTab(false) end)
 
 MinimizeBtn.MouseButton1Click:Connect(function()
     MainFrame.Visible = false
     FloatBtn.Visible = true
 end)
 
-FloatBtn.MouseButton1Click:Connect(function()
+-- Ícone: arrasta livremente; toque simples reabre a janela
+makeDraggable(FloatBtn, FloatBtn, function()
     MainFrame.Visible = true
     FloatBtn.Visible = false
 end)
 
 CopyActionBtn.MouseButton1Click:Connect(startCopyProcess)
-CancelCopyBtn.MouseButton1Click:Connect(function()
-    cancelRequested = true
-end)
+CancelCopyBtn.MouseButton1Click:Connect(function() cancelRequested = true end)
 RefreshBtn.MouseButton1Click:Connect(loadBackupList)
 ImportActionBtn.MouseButton1Click:Connect(startImportProcess)
 
-print("Sistema de Backup Versão 3.0 carregado com sucesso!")
+print("Sistema de Backup v3.1 carregado!")
