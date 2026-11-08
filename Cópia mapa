@@ -1,0 +1,592 @@
+--[[
+    PROJETO: SISTEMA DE BACKUP E IMPORTAÇÃO DE MAPAS ROBLOX MOBILE
+    Autor: Assistente Especializado
+    Compatibilidade: Delta / Roblox Studio Lite (Mobile)
+]]
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
+local CoreGui = game:GetService("CoreGui")
+
+local player = Players.LocalPlayer
+local guiParent = (pcall(function() return CoreGui end) and CoreGui) or player:WaitForChild("PlayerGui")
+
+-- Verificar suporte a arquivos do executor
+local hasFileAPI = pcall(function()
+    return writefile and readfile and listfiles and makefolder
+end)
+
+-- Estado global do processo
+local isRunning = false
+local cancelRequested = false
+
+--------------------------------------------------------------------------------
+-- 1. CONSTRUÇÃO DA INTERFACE GRÁFICA (UI MODERNA DARK MODE)
+--------------------------------------------------------------------------------
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "MapBackupSystem"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+ScreenGui.Parent = guiParent
+
+-- Janela Principal
+local MainFrame = Instance.new("Frame")
+MainFrame.Name = "MainFrame"
+MainFrame.Size = UDim2.new(0, 380, 0, 440)
+MainFrame.Position = UDim2.new(0.5, -190, 0.5, -220)
+MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 26)
+MainFrame.BorderSizePixel = 0
+MainFrame.Visible = true
+MainFrame.Parent = ScreenGui
+
+local UICornerMain = Instance.new("UICorner")
+UICornerMain.CornerRadius = UDim.new(0, 12)
+UICornerMain.Parent = MainFrame
+
+local UIStrokeMain = Instance.new("UIStroke")
+UIStrokeMain.Color = Color3.fromRGB(45, 45, 55)
+UIStrokeMain.Thickness = 1.5
+UIStrokeMain.Parent = MainFrame
+
+-- Barra Superior (Título e Minimizar)
+local TopBar = Instance.new("Frame")
+TopBar.Size = UDim2.new(1, 0, 0, 45)
+TopBar.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+TopBar.BorderSizePixel = 0
+TopBar.Parent = MainFrame
+
+local UICornerTop = Instance.new("UICorner")
+UICornerTop.CornerRadius = UDim.new(0, 12)
+TopBar.Parent = MainFrame
+-- Ajuste visual para canto superior arredondado
+local TopCover = Instance.new("Frame")
+TopCover.Size = UDim2.new(1, 0, 0, 10)
+TopCover.Position = UDim2.new(0, 0, 1, -10)
+TopCover.BackgroundColor3 = Color3.fromRGB(30, 30, 36)
+TopCover.BorderSizePixel = 0
+TopCover.Parent = TopBar
+
+local TitleLabel = Instance.new("TextLabel")
+TitleLabel.Size = UDim2.new(1, -100, 1, 0)
+TitleLabel.Position = UDim2.new(0, 15, 0, 0)
+TitleLabel.BackgroundTransparency = 1
+TitleLabel.Font = Enum.Font.GothamBold
+TitleLabel.Text = "📱 Map Backup Mobile"
+TitleLabel.TextColor3 = Color3.fromRGB(240, 240, 245)
+TitleLabel.TextSize = 15
+TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+TitleLabel.Parent = TopBar
+
+local MinimizeBtn = Instance.new("TextButton")
+MinimizeBtn.Size = UDim2.new(0, 35, 0, 35)
+MinimizeBtn.Position = UDim2.new(1, -40, 0, 5)
+MinimizeBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+MinimizeBtn.Font = Enum.Font.GothamBold
+MinimizeBtn.Text = "-"
+MinimizeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+MinimizeBtn.TextSize = 18
+MinimizeBtn.Parent = TopBar
+
+local UICornerMin = Instance.new("UICorner")
+UICornerMin.CornerRadius = UDim.new(0, 8)
+UICornerMin.Parent = MinimizeBtn
+
+-- Botão Flutuante para Reabrir
+local FloatBtn = Instance.new("TextButton")
+FloatBtn.Name = "FloatButton"
+FloatBtn.Size = UDim2.new(0, 50, 0, 50)
+FloatBtn.Position = UDim2.new(0, 20, 0.8, -50)
+FloatBtn.BackgroundColor3 = Color3.fromRGB(0, 162, 255)
+FloatBtn.Font = Enum.Font.GothamBold
+FloatBtn.Text = "💾"
+FloatBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+FloatBtn.TextSize = 22
+FloatBtn.Visible = false
+FloatBtn.Parent = ScreenGui
+
+local UICornerFloat = Instance.new("UICorner")
+UICornerFloat.CornerRadius = UDim.new(1, 0)
+UICornerFloat.Parent = FloatBtn
+
+-- Navegação por Abas
+local TabBar = Instance.new("Frame")
+TabBar.Size = UDim2.new(1, -20, 0, 38)
+TabBar.Position = UDim2.new(0, 10, 0, 55)
+TabBar.BackgroundColor3 = Color3.fromRGB(28, 28, 34)
+TabBar.BorderSizePixel = 0
+TabBar.Parent = MainFrame
+
+local UICornerTab = Instance.new("UICorner")
+UICornerTab.CornerRadius = UDim.new(0, 8)
+TabBar.Parent = MainFrame
+
+local TabCopyBtn = Instance.new("TextButton")
+TabCopyBtn.Size = UDim2.new(0.5, -4, 1, -4)
+TabCopyBtn.Position = UDim2.new(0, 2, 0, 2)
+TabCopyBtn.BackgroundColor3 = Color3.fromRGB(0, 162, 255)
+TabCopyBtn.Font = Enum.Font.GothamBold
+TabCopyBtn.Text = "COPIAR"
+TabCopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+TabCopyBtn.TextSize = 13
+TabCopyBtn.Parent = TabBar
+
+local UICornerTC = Instance.new("UICorner")
+UICornerTC.CornerRadius = UDim.new(0, 6)
+UICornerTC.Parent = TabCopyBtn
+
+local TabImportBtn = Instance.new("TextButton")
+TabImportBtn.Size = UDim2.new(0.5, -4, 1, -4)
+TabImportBtn.Position = UDim2.new(0.5, 2, 0, 2)
+TabImportBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+TabImportBtn.Font = Enum.Font.GothamBold
+TabImportBtn.Text = "IMPORTAR"
+TabImportBtn.TextColor3 = Color3.fromRGB(160, 160, 175)
+TabImportBtn.TextSize = 13
+TabImportBtn.Parent = TabBar
+
+local UICornerTI = Instance.new("UICorner")
+UICornerTI.CornerRadius = UDim.new(0, 6)
+UICornerTI.Parent = TabImportBtn
+
+-- Containers de Conteúdo
+local CopyContainer = Instance.new("Frame")
+CopyContainer.Size = UDim2.new(1, -20, 1, -110)
+CopyContainer.Position = UDim2.new(0, 10, 0, 100)
+CopyContainer.BackgroundTransparency = 1
+CopyContainer.Parent = MainFrame
+
+local ImportContainer = Instance.new("Frame")
+ImportContainer.Size = UDim2.new(1, -20, 1, -110)
+ImportContainer.Position = UDim2.new(0, 10, 0, 100)
+ImportContainer.BackgroundTransparency = 1
+ImportContainer.Visible = false
+ImportContainer.Parent = MainFrame
+
+--------------------------------------------------------------------------------
+-- CONTEÚDO DA ABA: COPIAR MAPA
+--------------------------------------------------------------------------------
+
+local CopyActionBtn = Instance.new("TextButton")
+CopyActionBtn.Size = UDim2.new(1, 0, 0, 45)
+CopyActionBtn.Position = UDim2.new(0, 0, 0, 10)
+CopyActionBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
+CopyActionBtn.Font = Enum.Font.GothamBold
+CopyActionBtn.Text = "COPIAR MAPA DO WORKSPACE"
+CopyActionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CopyActionBtn.TextSize = 14
+CopyActionBtn.Parent = CopyContainer
+
+local UICornerCAB = Instance.new("UICorner")
+UICornerCAB.CornerRadius = UDim.new(0, 8)
+UICornerCAB.Parent = CopyActionBtn
+
+local CancelCopyBtn = Instance.new("TextButton")
+CancelCopyBtn.Size = UDim2.new(1, 0, 0, 35)
+CancelCopyBtn.Position = UDim2.new(0, 0, 0, 62)
+CancelCopyBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+CancelCopyBtn.Font = Enum.Font.GothamBold
+CancelCopyBtn.Text = "CANCELAR OPERAÇÃO"
+CancelCopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+CancelCopyBtn.TextSize = 13
+CancelCopyBtn.Visible = false
+CancelCopyBtn.Parent = CopyContainer
+
+local UICornerCCB = Instance.new("UICorner")
+UICornerCCB.CornerRadius = UDim.new(0, 8)
+UICornerCCB.Parent = CancelCopyBtn
+
+-- Barra de Progresso Copiar
+local ProgressBgC = Instance.new("Frame")
+ProgressBgC.Size = UDim2.new(1, 0, 0, 14)
+ProgressBgC.Position = UDim2.new(0, 0, 0, 115)
+ProgressBgC.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+ProgressBgC.Parent = CopyContainer
+
+local UICornerPGC = Instance.new("UICorner")
+UICornerPGC.CornerRadius = UDim.new(1, 0)
+UICornerPGC.Parent = ProgressBgC
+
+local ProgressBarC = Instance.new("Frame")
+ProgressBarC.Size = UDim2.new(0, 0, 1, 0)
+ProgressBarC.BackgroundColor3 = Color3.fromRGB(0, 162, 255)
+ProgressBarC.Parent = ProgressBgC
+
+local UICornerPBarC = Instance.new("UICorner")
+UICornerPBarC.CornerRadius = UDim.new(1, 0)
+UICornerPBarC.Parent = ProgressBarC
+
+local StatusCopy = Instance.new("TextLabel")
+StatusCopy.Size = UDim2.new(1, 0, 0, 30)
+StatusCopy.Position = UDim2.new(0, 0, 0, 135)
+StatusCopy.BackgroundTransparency = 1
+StatusCopy.Font = Enum.Font.Gotham
+StatusCopy.Text = "Status: Pronto para copiar"
+StatusCopy.TextColor3 = Color3.fromRGB(180, 180, 195)
+StatusCopy.TextSize = 12
+StatusCopy.TextXAlignment = Enum.TextXAlignment.Left
+StatusCopy.Parent = CopyContainer
+
+-- Caixa de Texto para Exportação Universal (Cross-App)
+local ExportBox = Instance.new("TextBox")
+ExportBox.Size = UDim2.new(1, 0, 0, 130)
+ExportBox.Position = UDim2.new(0, 0, 0, 175)
+ExportBox.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+ExportBox.Font = Enum.Font.Code
+ExportBox.MultiLine = true
+ExportBox.ClearTextOnFocus = false
+ExportBox.PlaceholderText = "Os dados serializados do mapa aparecerão aqui para cópia..."
+ExportBox.Text = ""
+ExportBox.TextColor3 = Color3.fromRGB(0, 255, 128)
+ExportBox.TextSize = 11
+ExportBox.TextXAlignment = Enum.TextXAlignment.Left
+ExportBox.TextYAlignment = Enum.TextYAlignment.Top
+ExportBox.Parent = CopyContainer
+
+local UICornerEB = Instance.new("UICorner")
+UICornerEB.CornerRadius = UDim.new(0, 8)
+UICornerEB.Parent = ExportBox
+
+--------------------------------------------------------------------------------
+-- CONTEÚDO DA ABA: IMPORTAR MAPA
+--------------------------------------------------------------------------------
+
+local ImportBox = Instance.new("TextBox")
+ImportBox.Size = UDim2.new(1, 0, 0, 185)
+ImportBox.Position = UDim2.new(0, 0, 0, 10)
+ImportBox.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
+ImportBox.Font = Enum.Font.Code
+ImportBox.MultiLine = true
+ImportBox.ClearTextOnFocus = false
+ImportBox.PlaceholderText = "Cole aqui o código JSON/Lua exportado do backup..."
+ImportBox.Text = ""
+ImportBox.TextColor3 = Color3.fromRGB(220, 220, 240)
+ImportBox.TextSize = 11
+ImportBox.TextXAlignment = Enum.TextXAlignment.Left
+ImportBox.TextYAlignment = Enum.TextYAlignment.Top
+ImportBox.Parent = ImportContainer
+
+local UICornerIB = Instance.new("UICorner")
+UICornerIB.CornerRadius = UDim.new(0, 8)
+UICornerIB.Parent = ImportBox
+
+local ImportActionBtn = Instance.new("TextButton")
+ImportActionBtn.Size = UDim2.new(1, 0, 0, 45)
+ImportActionBtn.Position = UDim2.new(0, 0, 0, 205)
+ImportActionBtn.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
+ImportActionBtn.Font = Enum.Font.GothamBold
+ImportActionBtn.Text = "RECONSTRUIR MAPA NO WORKSPACE"
+ImportActionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+ImportActionBtn.TextSize = 13
+ImportActionBtn.Parent = ImportContainer
+
+local UICornerIAB = Instance.new("UICorner")
+UICornerIAB.CornerRadius = UDim.new(0, 8)
+UICornerIAB.Parent = ImportActionBtn
+
+local StatusImport = Instance.new("TextLabel")
+StatusImport.Size = UDim2.new(1, 0, 0, 25)
+StatusImport.Position = UDim2.new(0, 0, 0, 255)
+StatusImport.BackgroundTransparency = 1
+StatusImport.Font = Enum.Font.Gotham
+StatusImport.Text = "Status: Aguardando dados para importação"
+StatusImport.TextColor3 = Color3.fromRGB(180, 180, 195)
+StatusImport.TextSize = 12
+StatusImport.TextXAlignment = Enum.TextXAlignment.Left
+StatusImport.Parent = ImportContainer
+
+--------------------------------------------------------------------------------
+-- 2. SISTEMA DE SERIALIZAÇÃO & CÓPIA DE OBJETOS
+--------------------------------------------------------------------------------
+
+local supportedClasses = {
+    ["Part"] = true,
+    ["MeshPart"] = true,
+    ["Model"] = true,
+    ["Folder"] = true,
+    ["UnionOperation"] = true,
+    ["Decal"] = true,
+    ["Texture"] = true,
+    ["PointLight"] = true,
+    ["SurfaceLight"] = true,
+    ["SpotLight"] = true,
+    ["SurfaceGui"] = true,
+    ["BillboardGui"] = true
+}
+
+local function serializeCFrame(cf)
+    local components = {cf:GetComponents()}
+    return components
+end
+
+local function deserializeCFrame(components)
+    return CFrame.new(unpack(components))
+end
+
+local function serializeObject(obj, parentPath)
+    if not supportedClasses[obj.ClassName] then return nil end
+    if obj == ScreenGui then return nil end
+    
+    local data = {
+        Name = obj.Name,
+        ClassName = obj.ClassName,
+        Path = parentPath .. "/" .. obj.Name,
+        Properties = {}
+    }
+    
+    -- Propriedades comuns e geométricas
+    pcall(function()
+        if obj:IsA("BasePart") then
+            data.Properties.Size = {obj.Size.X, obj.Size.Y, obj.Size.Z}
+            data.Properties.CFrame = serializeCFrame(obj.CFrame)
+            data.Properties.Color = {obj.Color.R, obj.Color.G, obj.Color.B}
+            data.Properties.Material = obj.Material.Name
+            data.Properties.Transparency = obj.Transparency
+            data.Properties.Reflectance = obj.Reflectance
+            data.Properties.Anchored = obj.Anchored
+            data.Properties.CanCollide = obj.CanCollide
+            data.Properties.CastShadow = obj.CastShadow
+        elseif obj:IsA("MeshPart") then
+            data.Properties.MeshId = obj.MeshId
+            data.Properties.TextureID = obj.TextureID
+        elseif obj:IsA("Decal") or obj:IsA("Texture") then
+            data.Properties.Texture = obj.Texture
+            data.Properties.Transparency = obj.Transparency
+            data.Properties.Face = obj.Face.Name
+        elseif obj:IsA("Light") then
+            data.Properties.Brightness = obj.Brightness
+            data.Properties.Range = obj.Range
+            data.Properties.Color = {obj.Color.R, obj.Color.G, obj.Color.B}
+            data.Properties.Enabled = obj.Enabled
+        end
+    end)
+    
+    return data
+end
+
+-- Função de Cópia em Lotes com Otimização Mobile
+local function startCopyProcess()
+    if isRunning then return end
+    isRunning = true
+    cancelRequested = false
+    
+    CopyActionBtn.Visible = false
+    CancelCopyBtn.Visible = true
+    StatusCopy.Text = "Status: Escaneando objetos..."
+    
+    task.spawn(function()
+        local objectsToProcess = {}
+        
+        -- Coleta recursiva segura ignorando Players e Camera
+        local function scan(item, path)
+            for _, child in ipairs(item:GetChildren()) do
+                if child ~= ScreenGui and child.Name ~= "PlayerGui" then
+                    if supportedClasses[child.ClassName] then
+                        table.insert(objectsToProcess, {obj = child, path = path})
+                        scan(child, path .. "/" .. child.Name)
+                    end
+                end
+            end
+        end
+        
+        pcall(function()
+            scan(Workspace, "Workspace")
+        end)
+        
+        local totalObjects = #objectsToProcess
+        if totalObjects == 0 {
+            StatusCopy.Text = "Status: Nenhum objeto compatível encontrado."
+            isRunning = false
+            CopyActionBtn.Visible = true
+            CancelCopyBtn.Visible = false
+            return
+        }
+        
+        local serializedData = {
+            Version = "1.0",
+            Timestamp = os.time(),
+            Total = totalObjects,
+            Objects = {}
+        }
+        
+        local batchSize = 50 -- Lotes menores para evitar travamentos no celular
+        for i, itemData in ipairs(objectsToProcess) do
+            if cancelRequested then
+                StatusCopy.Text = "Status: Cópia cancelada pelo usuário."
+                isRunning = false
+                CopyActionBtn.Visible = true
+                CancelCopyBtn.Visible = false
+                ProgressBarC.Size = UDim2.new(0, 0, 1, 0)
+                return
+            end
+            
+            local serialized = serializeObject(itemData.obj, itemData.path)
+            if serialized then
+                table.insert(serializedData.Objects, serialized)
+            end
+            
+            -- Atualizar UI a cada lote
+            if i % batchSize == 0 or i == totalObjects then
+                local pct = i / totalObjects
+                ProgressBarC.Size = UDim2.new(pct, 0, 1, 0)
+                StatusCopy.Text = string.format("Copiando: %d / %d (%.0f%%)", i, totalObjects, pct * 100)
+                task.wait(0.01) -- Cede ciclo de processamento para não travar o Android
+            end
+        end
+        
+        -- Codificar para JSON
+        local success, encoded = pcall(function()
+            return HttpService:JSONEncode(serializedData)
+        end)
+        
+        if success then
+            ExportBox.Text = encoded
+            StatusCopy.Text = string.format("Sucesso! %d objetos copiados.", totalObjects)
+            
+            -- Salvar em arquivo automático se o executor permitir
+            if hasFileAPI then
+                pcall(function()
+                    if not isfolder("MapBackups") then
+                        makefolder("MapBackups")
+                    end
+                    local fileName = "MapBackups/Mapa_" .. os.date("%Y%m%d_%H%M%S") .. ".json"
+                    writefile(fileName, encoded)
+                    StatusCopy.Text = StatusCopy.Text .. " (Salvo em /MapBackups)"
+                end)
+            end
+        else
+            StatusCopy.Text = "Erro ao serializar dados do mapa."
+        end
+        
+        isRunning = false
+        CopyActionBtn.Visible = true
+        CancelCopyBtn.Visible = false
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 3. SISTEMA DE IMPORTAÇÃO E RECONSTRUÇÃO
+--------------------------------------------------------------------------------
+
+local function startImportProcess()
+    if isRunning then return end
+    
+    local rawData = ImportBox.Text
+    if rawData == "" then
+        StatusImport.Text = "Erro: Caixa de dados vazia!"
+        return
+    end
+    
+    local successDecode, decodedData = pcall(function()
+        return HttpService:JSONDecode(rawData)
+    end)
+    
+    if not successDecode or not decodedData or not decodedData.Objects then
+        StatusImport.Text = "Erro: Formato de JSON inválido!"
+        return
+    end
+    
+    isRunning = true
+    StatusImport.Text = "Iniciando reconstrução..."
+    
+    task.spawn(function()
+        local objectsList = decodedData.Objects
+        local total = #objectsList
+        local batchSize = 30
+        
+        -- Criar Pasta Raiz do Mapa Importado no Workspace
+        local importedFolder = Instance.new("Folder")
+        importedFolder.Name = "MapaImportado_" .. os.date("%H%M%S")
+        importedFolder.Parent = Workspace
+        
+        -- Dicionário para cache de instâncias criadas
+        local createdInstances = {}
+        
+        for i, itemData in ipairs(objectsList) do
+            pcall(function()
+                local newObj = Instance.new(itemData.ClassName)
+                newObj.Name = itemData.Name
+                
+                local props = itemData.Properties
+                if props then
+                    if newObj:IsA("BasePart") then
+                        if props.Size then newObj.Size = Vector3.new(unpack(props.Size)) end
+                        if props.CFrame then newObj.CFrame = deserializeCFrame(props.CFrame) end
+                        if props.Color then newObj.Color = Color3.new(unpack(props.Color)) end
+                        if props.Material and Enum.Material[props.Material] then 
+                            newObj.Material = Enum.Material[props.Material] 
+                        end
+                        if props.Transparency then newObj.Transparency = props.Transparency end
+                        if props.Reflectance then newObj.Reflectance = props.Reflectance end
+                        if props.Anchored ~= nil then newObj.Anchored = props.Anchored end
+                        if props.CanCollide ~= nil then newObj.CanCollide = props.CanCollide end
+                        if props.CastShadow ~= nil then newObj.CastShadow = props.CastShadow end
+                    elseif newObj:IsA("MeshPart") then
+                        if props.MeshId then newObj.MeshId = props.MeshId end
+                        if props.TextureID then newObj.TextureID = props.TextureID end
+                    elseif newObj:IsA("Decal") or newObj:IsA("Texture") then
+                        if props.Texture then newObj.Texture = props.Texture end
+                        if props.Transparency then newObj.Transparency = props.Transparency end
+                    elseif newObj:IsA("Light") then
+                        if props.Brightness then newObj.Brightness = props.Brightness end
+                        if props.Range then newObj.Range = props.Range end
+                        if props.Color then newObj.Color = Color3.new(unpack(props.Color)) end
+                        if props.Enabled ~= nil then newObj.Enabled = props.Enabled end
+                    end
+                end
+                
+                newObj.Parent = importedFolder
+                createdInstances[itemData.Path] = newObj
+            end)
+            
+            if i % batchSize == 0 or i == total {
+                StatusImport.Text = string.format("Importando: %d / %d (%.0f%%)", i, total, (i / total) * 100)
+                task.wait(0.01)
+            end
+        end
+        
+        StatusImport.Text = string.format("Sucesso! %d objetos reconstruídos.", total)
+        isRunning = false
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 4. INTERAÇÕES DE ABAS E MINIMIZAÇÃO
+--------------------------------------------------------------------------------
+
+TabCopyBtn.MouseButton1Click:Connect(function()
+    CopyContainer.Visible = true
+    ImportContainer.Visible = false
+    TabCopyBtn.BackgroundColor3 = Color3.fromRGB(0, 162, 255)
+    TabCopyBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TabImportBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+    TabImportBtn.TextColor3 = Color3.fromRGB(160, 160, 175)
+end)
+
+TabImportBtn.MouseButton1Click:Connect(function()
+    CopyContainer.Visible = false
+    ImportContainer.Visible = true
+    TabImportBtn.BackgroundColor3 = Color3.fromRGB(0, 162, 255)
+    TabImportBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    TabCopyBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 42)
+    TabCopyBtn.TextColor3 = Color3.fromRGB(160, 160, 175)
+end)
+
+MinimizeBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+    FloatBtn.Visible = true
+end)
+
+FloatBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = true
+    FloatBtn.Visible = false
+end)
+
+CopyActionBtn.MouseButton1Click:Connect(startCopyProcess)
+CancelCopyBtn.MouseButton1Click:Connect(function()
+    cancelRequested = true
+end)
+ImportActionBtn.MouseButton1Click:Connect(startImportProcess)
+
+print("Sistema de Backup & Importação Mobile carregado com sucesso!")
