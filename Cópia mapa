@@ -1,7 +1,9 @@
 --[[
-    SISTEMA DE BACKUP E CONVERSOR DE MAPAS EM SCRIPT - Versão 4.0
+    SISTEMA DE BACKUP E CONVERSOR DE MAPAS EM SCRIPT - Versão 4.1
     Interface compacta, janela arrastável e ícone flutuante circular
-    Novo: Converte backups salvos diretamente em código Lua (para colocar no ServerScriptService)
+    Converte backups salvos em código Lua (para colocar no ServerScriptService)
+    Todas as partes (BasePart) do mapa gerado ficam com Anchored = true.
+    Mapas grandes são divididos em vários scripts, que carregam em ordem sozinhos.
 ]]
 
 local Players = game:GetService("Players")
@@ -11,7 +13,6 @@ local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local Lighting = game:GetService("Lighting")
-local CollectionService = game:GetService("CollectionService")
 
 local player = Players.LocalPlayer
 local userId = player and player.UserId or 0
@@ -211,7 +212,7 @@ GenContainer.Visible = false
 GenContainer.Parent = MainFrame
 
 --------------------------------------------------------------------------------
--- ABA COPIAR
+-- ABA CRIAR (backup)
 --------------------------------------------------------------------------------
 
 local NameBox = Instance.new("TextBox")
@@ -298,9 +299,9 @@ UIListBS.SortOrder = Enum.SortOrder.LayoutOrder
 UIListBS.Parent = BackupScroll
 
 local RefreshBtn = newButton(GenContainer, "↻ Atualizar", Theme.Surface2, UDim2.new(0.4, -3, 0, 36), UDim2.new(0, 0, 0, 126), 12)
-local GenActionBtn = newButton(GenContainer, "GERAR SCRIPTS", Theme.Accent, UDim2.new(0.6, -3, 0, 36), UDim2.new(0.4, 3, 0, 126), 12)
+local GenActionBtn = newButton(GenContainer, "GERAR SCRIPT", Theme.Accent, UDim2.new(0.6, -3, 0, 36), UDim2.new(0.4, 3, 0, 126), 12)
 
-local StatusGen = newLabel(GenContainer, "Selecione um backup para criar os scripts do mapa.",
+local StatusGen = newLabel(GenContainer, "Toque em SCRIPT ao lado de um backup (ou selecione e use GERAR SCRIPT).",
     UDim2.new(1, 0, 0, 40), UDim2.new(0, 2, 0, 170), 11)
 
 --------------------------------------------------------------------------------
@@ -324,7 +325,7 @@ corner(FloatBtn, 26)
 stroke(FloatBtn, Theme.Accent, 2)
 
 --------------------------------------------------------------------------------
--- 3. SERIALIZAÇÃO E GERAÇÃO DE CÓDIGO
+-- 3. SERIALIZAÇÃO (BACKUP)
 --------------------------------------------------------------------------------
 
 local function sanitizeName(text)
@@ -338,15 +339,20 @@ local function sanitizeName(text)
 end
 
 local CHUNK_SIZE = 100
-local YIELD_EVERY = 20
 local TERRAIN_CHUNK = 32
 local BACKUP_VERSION = 4
+local MAX_SCRIPT_CHARS = 150000 -- tamanho máximo de cada script gerado
 local activeConn = nil
 
+-- apaga a pasta, inclusive subpastas
 local function deleteBackupFolder(folderPath)
     pcall(function()
         for _, f in ipairs(listfiles(folderPath)) do
-            pcall(delfile, f)
+            if isfolder(f) then
+                deleteBackupFolder(f)
+            else
+                pcall(delfile, f)
+            end
         end
         if type(delfolder) == "function" then
             pcall(delfolder, folderPath)
@@ -431,7 +437,7 @@ local propertyGroups = {
     {"UIPadding", {"PaddingTop", "PaddingBottom", "PaddingLeft", "PaddingRight"}},
     {"Attachment", {"CFrame", "Visible"}},
     {"WeldConstraint", {"Enabled", "Part0", "Part1"}},
-    {"Humanoid", {"Health", "MaxHealth", "WalkSpeed", "JumpPower"}},
+    {"Humanoid", {"MaxHealth", "Health", "WalkSpeed", "JumpPower"}},
 }
 
 for _, valueClass in ipairs({"StringValue", "IntValue", "NumberValue", "BoolValue", "ObjectValue", "Color3Value", "Vector3Value", "CFrameValue"}) do
@@ -447,6 +453,18 @@ local excludedClasses = {
     Script = true, LocalScript = true, ModuleScript = true,
     Player = true, PlayerGui = true, Backpack = true, PlayerScripts = true, StarterGear = true,
 }
+
+local function serializeProps(obj, list)
+    local P = {}
+    for _, name in ipairs(list) do
+        local ok, v = pcall(function() return obj[name] end)
+        if ok and v ~= nil then
+            local enc = encodeValue(v, nil)
+            if enc ~= nil then P[#P + 1] = {name, enc} end
+        end
+    end
+    return P
+end
 
 local function serializeRecord(rec, records)
     local obj = rec.inst
@@ -567,10 +585,11 @@ local function streamingSweep(recList, setStatus)
     end
     if not minX then return end
 
+    setStatus("Carregando o mapa (streaming)...")
     for x = minX, maxX + step, step do
         for z = minZ, maxZ + step, step do
             if cancelRequested then return end
-            pcall(function() player:RequestStreamAroundAsync(Vector3.new(x, (minY+maxY)/2, z), 2) end)
+            pcall(function() player:RequestStreamAroundAsync(Vector3.new(x, (minY + maxY) / 2, z), 2) end)
             task.wait(0.05)
         end
     end
@@ -600,14 +619,21 @@ local function runCopy()
     setStatus("Escaneando o mapa...")
     activeConn = Workspace.DescendantAdded:Connect(function(d) register(d, "Workspace") end)
 
+    local n = 0
     for _, svc in ipairs({{Workspace, "Workspace"}, {Lighting, "Lighting"}}) do
         for _, d in ipairs(svc[1]:GetDescendants()) do
             register(d, svc[2])
+            n = n + 1
+            if n % 500 == 0 then task.wait() end
         end
     end
 
     streamingSweep(recList, setStatus)
     if activeConn then activeConn:Disconnect(); activeConn = nil end
+    if cancelRequested then
+        setStatus("Cópia cancelada.")
+        return
+    end
 
     local children = {}
     for _, rec in ipairs(recList) do
@@ -634,6 +660,7 @@ local function runCopy()
             rec.oid = #ordered
             pushChildren(rec.inst)
         end
+        if #ordered % 2000 == 0 then task.wait() end
     end
 
     local total = #ordered
@@ -651,6 +678,13 @@ local function runCopy()
 
     local totalParts = math.ceil(total / CHUNK_SIZE)
     for partIndex = 1, totalParts do
+        if cancelRequested then
+            deleteBackupFolder(mapFolder)
+            setProgress(0)
+            setStatus("Cópia cancelada.")
+            return
+        end
+
         local entries = {}
         local first = (partIndex - 1) * CHUNK_SIZE + 1
         local last = math.min(partIndex * CHUNK_SIZE, total)
@@ -662,16 +696,23 @@ local function runCopy()
         if okEnc then
             writeVerified(string.format("%s/Parte_%03d.json", mapFolder, partIndex), encoded)
         end
-        setProgress(partIndex / totalParts)
+        setProgress(partIndex / totalParts * 0.9)
         setStatus(string.format("Salvando parte %d/%d", partIndex, totalParts))
         task.wait()
     end
 
     local terrainFiles, terrainChunks = copyTerrain(mapFolder, setStatus)
+    if terrainFiles == nil then
+        deleteBackupFolder(mapFolder)
+        setProgress(0)
+        setStatus("Cópia cancelada.")
+        return
+    end
 
     local services = {
         Lighting = serializeProps(Lighting, lightingProps),
         Workspace = serializeProps(Workspace, workspaceProps),
+        TerrainProps = {},
     }
     local terrain = Workspace:FindFirstChildOfClass("Terrain")
     if terrain then
@@ -700,10 +741,296 @@ local function finishCopy()
 end
 
 --------------------------------------------------------------------------------
--- 4. GERADOR DE SCRIPTS PARA O SERVERSCRIPTSERVICE
+-- 4. GERADOR DE SCRIPTS PARA O SERVERSCRIPTSERVICE (tudo Anchored = true)
 --------------------------------------------------------------------------------
 
-local function loadBackupList()
+local function fmtNum(n)
+    return string.format("%.9g", n)
+end
+
+-- converte um valor salvo em código Lua (ou nil se o tipo não for suportado)
+local function luaValue(val)
+    local t = type(val)
+    if t == "boolean" then
+        return tostring(val)
+    elseif t == "number" then
+        return fmtNum(val)
+    elseif t == "string" then
+        return string.format("%q", val)
+    elseif t == "table" then
+        local k = val._t
+        if k == "CF" then
+            local parts = {}
+            for i, c in ipairs(val.c) do parts[i] = fmtNum(c) end
+            return "CFrame.new(" .. table.concat(parts, ",") .. ")"
+        elseif k == "V3" then
+            return string.format("Vector3.new(%s,%s,%s)", fmtNum(val.x), fmtNum(val.y), fmtNum(val.z))
+        elseif k == "V2" then
+            return string.format("Vector2.new(%s,%s)", fmtNum(val.x), fmtNum(val.y))
+        elseif k == "C3" then
+            return string.format("Color3.new(%s,%s,%s)", fmtNum(val.r), fmtNum(val.g), fmtNum(val.b))
+        elseif k == "UD" then
+            return string.format("UDim.new(%s,%s)", fmtNum(val.s), fmtNum(val.o))
+        elseif k == "UD2" then
+            return string.format("UDim2.new(%s,%s,%s,%s)", fmtNum(val.xs), fmtNum(val.xo), fmtNum(val.ys), fmtNum(val.yo))
+        elseif k == "NR" then
+            return string.format("NumberRange.new(%s,%s)", fmtNum(val.min), fmtNum(val.max))
+        elseif k == "BC" then
+            return string.format("BrickColor.new(%q)", val.n)
+        elseif k == "Enum" then
+            local e = (val.e:gsub("^Enum%.", ""))
+            return "Enum." .. e .. "." .. val.n
+        end
+    end
+    return nil
+end
+
+-- Cabeçalho (igual em todas as partes). PART e TOTAL são definidos antes dele.
+local SCRIPT_HEADER = [==[
+-- Coloque TODAS as partes no ServerScriptService. Elas carregam em ordem sozinhas.
+local Workspace = game:GetService("Workspace")
+local Lighting = game:GetService("Lighting")
+local AssetService = game:GetService("AssetService")
+
+shared.MapLoaderState = shared.MapLoaderState or {done = 0, idMap = {}, pending = {}, seen = {}}
+local state = shared.MapLoaderState
+repeat task.wait() until state.done >= PART - 1 -- espera a parte anterior terminar
+
+local mapFolder = Workspace:FindFirstChild("MapaGerado")
+if not mapFolder then
+    mapFolder = Instance.new("Folder")
+    mapFolder.Name = "MapaGerado"
+    mapFolder.Parent = Workspace
+end
+
+]==]
+
+-- Rodapé (igual em todas as partes): cria os objetos, ancora tudo e liga as referências.
+local SCRIPT_FOOTER = [==[
+
+local idMap, pending = state.idMap, state.pending
+
+for i, data in ipairs(tb) do
+    local parentObj
+    if data.PId == 0 then
+        parentObj = (data.R == "Lighting") and Lighting or mapFolder
+    else
+        parentObj = idMap[data.PId]
+    end
+
+    if parentObj then
+        local obj
+
+        -- MeshId não pode ser definido depois da criação, então a MeshPart é criada já com a malha
+        if data.C == "MeshPart" and data.Pr.MeshId then
+            local okM, mesh = pcall(function()
+                return AssetService:CreateMeshPartAsync(data.Pr.MeshId, {
+                    CollisionFidelity = data.Pr.CollisionFidelity,
+                    RenderFidelity = data.Pr.RenderFidelity,
+                })
+            end)
+            if okM then obj = mesh end
+        end
+        if not obj then
+            local okI, created = pcall(Instance.new, data.C)
+            if okI then obj = created end
+        end
+
+        if obj then
+            obj.Name = data.N
+            for k, v in pairs(data.Pr) do
+                if k ~= "MeshId" then
+                    pcall(function() obj[k] = v end)
+                end
+            end
+
+            -- tudo ancorado
+            if obj:IsA("BasePart") then
+                obj.Anchored = true
+            end
+
+            for k, id in pairs(data.Rf) do
+                pending[#pending + 1] = {obj = obj, prop = k, id = id}
+            end
+
+            -- itens do Lighting (Sky, Atmosphere...) substituem os que já existem
+            if parentObj == Lighting and not state.seen[obj.ClassName] then
+                state.seen[obj.ClassName] = true
+                for _, existing in ipairs(Lighting:GetChildren()) do
+                    if existing.ClassName == obj.ClassName then existing:Destroy() end
+                end
+            end
+
+            obj.Parent = parentObj
+            idMap[data.Id] = obj
+        end
+    end
+
+    if i % 200 == 0 then task.wait() end
+end
+
+-- liga referências (Part0, Part1, PrimaryPart...) cujo alvo já existe;
+-- as que apontam para partes futuras ficam esperando a próxima parte
+local still = {}
+for _, p in ipairs(pending) do
+    local target = idMap[p.id]
+    if target then
+        pcall(function() p.obj[p.prop] = target end)
+    else
+        still[#still + 1] = p
+    end
+end
+table.clear(pending)
+for _, p in ipairs(still) do
+    pending[#pending + 1] = p
+end
+
+state.done = PART
+if PART == TOTAL then
+    print("Mapa carregado por completo! (" .. TOTAL .. " parte(s))")
+else
+    print("Mapa: parte " .. PART .. "/" .. TOTAL .. " carregada")
+end
+]==]
+
+local function loadBackupList() end -- definida mais abaixo
+
+local function generateMapScripts(backupPath)
+    if isRunning then
+        StatusGen.Text = "Aguarde o processo atual terminar."
+        return
+    end
+    if not backupPath then
+        StatusGen.Text = "Selecione um backup na lista!"
+        return
+    end
+
+    isRunning = true
+    StatusGen.Text = "Lendo dados e gerando código Lua..."
+
+    task.spawn(function()
+        local ok, err = pcall(function()
+            local okInfo, infoRaw = pcall(readfile, backupPath .. "/Informacoes.json")
+            if not okInfo then
+                StatusGen.Text = "Erro ao ler Informacoes.json (refaça o backup)."
+                return
+            end
+            local info = HttpService:JSONDecode(infoRaw)
+            local totalParts = info.TotalParts or 0
+
+            -- código das configurações de iluminação/gravidade (vai só na parte 1)
+            local extra = {}
+            local okSv, svRaw = pcall(readfile, backupPath .. "/Servicos.json")
+            if okSv then
+                local okD, services = pcall(HttpService.JSONDecode, HttpService, svRaw)
+                if okD and services then
+                    for _, p in ipairs(services.Lighting or {}) do
+                        local code = luaValue(p[2])
+                        if code then
+                            extra[#extra + 1] = string.format("pcall(function() Lighting.%s = %s end)", p[1], code)
+                        end
+                    end
+                    for _, p in ipairs(services.Workspace or {}) do
+                        local code = luaValue(p[2])
+                        if code then
+                            extra[#extra + 1] = string.format("pcall(function() Workspace.%s = %s end)", p[1], code)
+                        end
+                    end
+                end
+            end
+
+            -- monta as linhas de dados e divide em partes pelo tamanho
+            local chunks = {}
+            local lines, size = {}, 0
+
+            local function closeChunk()
+                if #lines > 0 then
+                    chunks[#chunks + 1] = table.concat(lines)
+                    lines, size = {}, 0
+                end
+            end
+
+            local objectCount = 0
+            for partIdx = 1, totalParts do
+                local okP, raw = pcall(readfile, string.format("%s/Parte_%03d.json", backupPath, partIdx))
+                if okP then
+                    local okJ, data = pcall(HttpService.JSONDecode, HttpService, raw)
+                    if okJ and data and data.Objects then
+                        for _, obj in ipairs(data.Objects) do
+                            local pr, rf = {}, {}
+                            for _, p in ipairs(obj.P or {}) do
+                                local name, val = p[1], p[2]
+                                if type(val) == "table" and val._t == "Ref" then
+                                    rf[#rf + 1] = string.format("%s=%d", name, val.id)
+                                else
+                                    local code = luaValue(val)
+                                    if code then pr[#pr + 1] = name .. "=" .. code end
+                                end
+                            end
+
+                            local line = string.format("tb[#tb+1]={Id=%d,PId=%d,R=%q,N=%q,C=%q,Pr={%s},Rf={%s}}\n",
+                                obj.Id, obj.ParentId, tostring(obj.Root), tostring(obj.Name), tostring(obj.ClassName),
+                                table.concat(pr, ","), table.concat(rf, ","))
+
+                            if size + #line > MAX_SCRIPT_CHARS and #lines > 0 then
+                                closeChunk()
+                            end
+                            lines[#lines + 1] = line
+                            size = size + #line
+                            objectCount = objectCount + 1
+                        end
+                    end
+                end
+                StatusGen.Text = string.format("Convertendo parte %d/%d do backup...", partIdx, totalParts)
+                task.wait()
+            end
+            closeChunk()
+
+            if #chunks == 0 then
+                StatusGen.Text = "Nenhum objeto encontrado neste backup."
+                return
+            end
+
+            -- grava os scripts
+            local outFolder = backupPath .. "/ScriptsGerados"
+            if isfolder(outFolder) then deleteBackupFolder(outFolder) end
+            makefolder(outFolder)
+
+            local failedWrites = 0
+            for idx, dataCode in ipairs(chunks) do
+                local source = table.concat({
+                    "-- MapLoader gerado automaticamente (Parte ", idx, " de ", #chunks, ")\n",
+                    "local PART, TOTAL = ", idx, ", ", #chunks, "\n",
+                    SCRIPT_HEADER,
+                    (idx == 1) and (table.concat(extra, "\n") .. "\n\n") or "",
+                    "local tb = {}\n",
+                    dataCode,
+                    SCRIPT_FOOTER,
+                })
+                if not writeVerified(string.format("%s/MapScript_Parte%d.lua", outFolder, idx), source) then
+                    failedWrites = failedWrites + 1
+                end
+                StatusGen.Text = string.format("Gravando script %d/%d...", idx, #chunks)
+                task.wait()
+            end
+
+            local msg = string.format("Sucesso! %d objetos em %d script(s) (tudo Anchored). Pasta: %s",
+                objectCount, #chunks, outFolder)
+            if failedWrites > 0 then
+                msg = msg .. string.format(" Falha ao gravar %d arquivo(s).", failedWrites)
+            end
+            StatusGen.Text = msg
+        end)
+        if not ok then StatusGen.Text = "Erro ao gerar scripts: " .. tostring(err) end
+        isRunning = false
+    end)
+end
+
+--------------------------------------------------------------------------------
+-- 5. LISTA DE BACKUPS
+--------------------------------------------------------------------------------
+
+function loadBackupList()
     for _, child in ipairs(BackupScroll:GetChildren()) do
         if child:IsA("Frame") then child:Destroy() end
     end
@@ -715,9 +1042,17 @@ local function loadBackupList()
 
     pcall(function()
         local userRootFolder = "MapBackups/User_" .. tostring(userId)
-        if not isfolder("MapBackups") or not isfolder(userRootFolder) then return end
+        if not isfolder("MapBackups") or not isfolder(userRootFolder) then
+            StatusGen.Text = "Você ainda não tem backups."
+            return
+        end
 
         local folders = listfiles(userRootFolder)
+        if #folders == 0 then
+            StatusGen.Text = "Você ainda não tem backups."
+            return
+        end
+
         for index, folderPath in ipairs(folders) do
             local folderName = folderPath:match("([^/\\]+)$") or folderPath
 
@@ -728,7 +1063,7 @@ local function loadBackupList()
             itemFrame.Parent = BackupScroll
 
             local selectBtn = Instance.new("TextButton")
-            selectBtn.Size = UDim2.new(1, -34, 1, 0)
+            selectBtn.Size = UDim2.new(1, -90, 1, 0)
             selectBtn.BackgroundColor3 = Theme.Surface2
             selectBtn.BorderSizePixel = 0
             selectBtn.Font = Enum.Font.Gotham
@@ -740,8 +1075,22 @@ local function loadBackupList()
             selectBtn.Parent = itemFrame
             corner(selectBtn, 7)
 
+            -- Botão: gerar script deste backup
+            local scriptBtn = Instance.new("TextButton")
+            scriptBtn.Size = UDim2.new(0, 52, 1, 0)
+            scriptBtn.Position = UDim2.new(1, -86, 0, 0)
+            scriptBtn.BackgroundColor3 = Theme.Success
+            scriptBtn.BorderSizePixel = 0
+            scriptBtn.Font = Enum.Font.GothamBold
+            scriptBtn.Text = "SCRIPT"
+            scriptBtn.TextColor3 = Theme.Text
+            scriptBtn.TextSize = 10
+            scriptBtn.ZIndex = 2
+            scriptBtn.Parent = itemFrame
+            corner(scriptBtn, 7)
+
             local deleteBtn = Instance.new("TextButton")
-            deleteBtn.Size = Instance.new("Frame") and UDim2.new(0, 30, 1, 0)
+            deleteBtn.Size = UDim2.new(0, 30, 1, 0)
             deleteBtn.Position = UDim2.new(1, -30, 0, 0)
             deleteBtn.BackgroundColor3 = Theme.Danger
             deleteBtn.BorderSizePixel = 0
@@ -755,6 +1104,11 @@ local function loadBackupList()
             if folderPath == selectedBackupPath then
                 selectBtn.BackgroundColor3 = Theme.Accent
             end
+
+            scriptBtn.MouseButton1Click:Connect(function()
+                selectedBackupPath = folderPath
+                generateMapScripts(folderPath)
+            end)
 
             local confirmDelete = false
             deleteBtn.MouseButton1Click:Connect(function()
@@ -792,128 +1146,8 @@ local function loadBackupList()
     end)
 end
 
-local function generateMapScripts()
-    if not selectedBackupPath then
-        StatusGen.Text = "Selecione um backup na lista!"
-        return
-    end
-
-    local okInfo, infoRaw = pcall(readfile, selectedBackupPath .. "/Informacoes.json")
-    if not okInfo then
-        StatusGen.Text = "Erro ao ler Informacoes.json"
-        return
-    end
-    local info = HttpService:JSONDecode(infoRaw)
-
-    StatusGen.Text = "Lendo dados e gerando código Lua..."
-    task.spawn(function()
-        local allObjectsCode = {}
-        local currentCode = ""
-        local fileCount = 1
-
-        for partIdx = 1, (info.TotalParts or 0) do
-            local okP, raw = pcall(readfile, string.format("%s/Parte_%03d.json", selectedBackupPath, partIdx))
-            if okP then
-                local data = HttpService:JSONDecode(raw)
-                for _, obj in ipairs(data.Objects or {}) do
-                    local line = string.format("tb[%d]={Id=%d,PId=%d,R='%s',N='%s',C='%s',Pr={", 
-                        obj.Id, obj.Id, obj.ParentId, tostring(obj.Root), tostring(obj.Name), tostring(obj.ClassName))
-                    
-                    for _, p in ipairs(obj.P or {}) do
-                        local name = p[1]
-                        local val = p[2]
-                        if type(val) == "table" then
-                            if val._t == "CF" then
-                                line = line .. string.format("%s=CFrame.new(%s),", name, table.concat(val.c, ","))
-                            elseif val._t == "V3" then
-                                line = line .. string.format("%s=Vector3.new(%f,%f,%f),", name, val.x, val.y, val.z)
-                            elseif val._t == "C3" then
-                                line = line .. string.format("%s=Color3.new(%f,%f,%f),", name, val.r, val.g, val.b)
-                            elseif val._t == "Enum" then
-                                line = line .. string.format("%s=Enum.%s.%s,", name, val.e:gsub("^Enum%.",""), val.n)
-                            elseif val._t == "UD2" then
-                                line = line .. string.format("%s=UDim2.new(%f,%d,%f,%d),", name, val.xs, val.xo, val.ys, val.yo)
-                            elseif val._t == "Ref" then
-                                line = line .. string.format("%s=%d,", name, val.id)
-                            end
-                        elseif type(val) == "boolean" or type(val) == "number" then
-                            line = line .. string.format("%s=%s,", name, tostring(val))
-                        elseif type(val) == "string" then
-                            line = line .. string.format("%s=%q,", name, val)
-                        end
-                    end
-                    line = line .. "}},\n"
-
-                    if #currentCode + #line > 180000 then -- Limite seguro por script do Roblox
-                        allObjectsCode[fileCount] = currentCode
-                        fileCount = fileCount + 1
-                        currentCode = ""
-                    end
-                    currentCode = currentCode .. line
-                end
-            end
-        end
-        if #currentCode > 0 then
-            allObjectsCode[fileCount] = currentCode
-        end
-
-        -- Criar pasta para salvar os scripts gerados no executor
-        local outFolder = selectedBackupPath .. "/ScriptsGerados"
-        if isfolder(outFolder) then deleteBackupFolder(outFolder) end
-        makefolder(outFolder)
-
-        local templateMain = [[
--- MapLoader Script gerado automaticamente (Parte %d)
-local Workspace = game:GetService("Workspace")
-local Lighting = game:GetService("Lighting")
-
-local mapFolder = Workspace:FindFirstChild("MapaGerado") or Instance.new("Folder")
-mapFolder.Name = "MapaGerado"
-mapFolder.Parent = Workspace
-
-local tb = {}
-%s
-
-local idMap = {}
-for _, data in pairs(tb) do
-    local parentObj = (data.PId == 0) and ((data.R == "Lighting") and Lighting or mapFolder) or idMap[data.PId]
-    if parentObj then
-        local ok, obj = pcall(Instance.new, data.C)
-        if ok and obj then
-            obj.Name = data.N
-            for k, v in pairs(data.Pr) do
-                if k ~= "Part0" and k ~= "Part1" then
-                    pcall(function() obj[k] = v end)
-                end
-            end
-            pcall(function() obj.Parent = parentObj end)
-            idMap[data.Id] = obj
-        end
-    end
-end
-
--- Ligar restrições (Welds, etc)
-for _, data in pairs(tb) do
-    local obj = idMap[data.Id]
-    if obj then
-        if data.Pr.Part0 and idMap[data.Pr.Part0] then pcall(function() obj.Part0 = idMap[data.Pr.Part0] end) end
-        if data.Pr.Part1 and idMap[data.Pr.Part1] then pcall(function() obj.Part1 = idMap[data.Pr.Part1] end) end
-    end
-end
-print("Mapa carregado com sucesso!")
-]]
-
-        for idx, codeChunk in ipairs(allObjectsCode) do
-            local finalCode = string.format(templateMain, idx, codeChunk)
-            writeVerified(string.format("%s/MapScript_Parte%d.lua", outFolder, idx), finalCode)
-        end
-
-        StatusGen.Text = string.format("Sucesso! %d script(s) gerados na pasta do backup.", #allObjectsCode)
-    end)
-end
-
 --------------------------------------------------------------------------------
--- 5. EVENTOS DE INTERFACE
+-- 6. EVENTOS DE INTERFACE
 --------------------------------------------------------------------------------
 
 local function setTab(copy)
@@ -946,16 +1180,23 @@ CopyActionBtn.MouseButton1Click:Connect(function()
         return
     end
     isRunning = true
+    cancelRequested = false
     CancelCopyBtn.Visible = true
     CopyActionBtn.Visible = false
+    setProgress(0)
     task.spawn(function()
-        pcall(runCopy)
+        local ok, err = pcall(runCopy)
+        if not ok then StatusCopy.Text = "Erro durante a cópia: " .. tostring(err) end
+        if activeConn then activeConn:Disconnect(); activeConn = nil end
         finishCopy()
     end)
 end)
 
 CancelCopyBtn.MouseButton1Click:Connect(function() cancelRequested = true end)
 RefreshBtn.MouseButton1Click:Connect(loadBackupList)
-GenActionBtn.MouseButton1Click:Connect(generateMapScripts)
+GenActionBtn.MouseButton1Click:Connect(function()
+    generateMapScripts(selectedBackupPath)
+end)
 
-print("Sistema Map-to-Script v4.0 carregado!")
+print("Sistema Map-to-Script v4.1 carregado!")
+
